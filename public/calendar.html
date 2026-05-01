@@ -3147,6 +3147,10 @@ function nextMonth() {
   const pendingActs = myActivities.filter(a => a.to_user_id === myUserId && a.status === 'pending');
   const totalBadge = pendingConnections.length + pendingSuggestions.length + pendingActs.length;
   document.getElementById('notif-dot').classList.toggle('hidden', totalBadge === 0);
+  // PWA app-icon badge: shows a number on the home-screen icon (Android Chrome,
+  // some other browsers) so the user can see at a glance there's something
+  // waiting. Always reflect the latest computed totalBadge.
+  _updateAppBadge(totalBadge);
 
   // Deep-link: notification click → open specific event pane
   const _urlParams = new URLSearchParams(window.location.search);
@@ -3157,6 +3161,13 @@ function nextMonth() {
     history.replaceState(null, '', cleanUrl);
     // Small delay so the calendar renders first
     setTimeout(() => openEventPaneDirect(_openEventId), 300);
+  } else {
+    // No deep-link — surface the freshest pending notification ourselves so
+    // the user lands directly on the event that needs their attention,
+    // rather than the calendar. We only auto-open NEW pendings (tracked by
+    // last-auto-opened ID in localStorage) so refreshing the calendar
+    // doesn't keep reopening the same item.
+    _autoOpenFreshestPendingNotification();
   }
 
   const splash = document.getElementById('splash');
@@ -3211,6 +3222,7 @@ async function loadConnections() {
     badge.textContent = totalBadge;
     badge.classList.toggle('hidden', totalBadge === 0);
   }
+  _updateAppBadge(totalBadge);
 
   renderConnectionsList();
 }
@@ -6175,7 +6187,59 @@ async function loadActivities() {
     const pendingActs = myActivities.filter(a => a.to_user_id === myUserId && a.status === 'pending');
     const totalBadge = pendingConnections.length + pendingSuggestions.length + pendingActs.length;
     document.getElementById('notif-dot').classList.toggle('hidden', totalBadge === 0);
+    _updateAppBadge(totalBadge);
   } catch(e) {}
+}
+
+// ── PWA app-icon badge sync ─────────────────────────────────────────────────
+// Reflect the in-app pending count on the home-screen / launcher icon via the
+// Badging API (Android Chrome, Edge, supported browsers). Falls back silently
+// where the API isn't available — no harm done. The SW push handler also
+// bumps this on incoming pushes so the dot appears even when the app is
+// closed; this client-side update keeps it in sync once the app is open.
+function _updateAppBadge(count) {
+  if (typeof navigator === 'undefined') return;
+  try {
+    if (count > 0 && 'setAppBadge' in navigator) {
+      navigator.setAppBadge(count);
+    } else if ('clearAppBadge' in navigator) {
+      navigator.clearAppBadge();
+    }
+  } catch(e) { /* badging API unsupported or denied */ }
+}
+
+// ── Auto-open the freshest pending notification on app launch ───────────────
+// When the user taps the home-screen icon (no ?openEvent= deep-link) and
+// there's a pending invite or change-suggestion newer than the one we last
+// auto-opened, jump straight to that event so the user sees what needs
+// their attention first. Refreshing the calendar with the same pending
+// items doesn't re-trigger (last-opened ID is tracked in localStorage).
+function _autoOpenFreshestPendingNotification() {
+  try {
+    const candidates = [];
+    // Pending incoming invites — friend invited me, I haven't responded.
+    for (const o of (myIncomingOutings || [])) {
+      if (o && o.my_invitee_status === 'pending' && o.id) {
+        candidates.push({ id: o.id, ts: new Date(o.created_at || o.updated_at || 0).getTime() });
+      }
+    }
+    // Pending suggestions — friend proposed a change to one of my outings.
+    for (const s of (pendingSuggestions || [])) {
+      const oid = s?.outing_id || s?.outingId;
+      if (oid) {
+        candidates.push({ id: oid, ts: new Date(s.created_at || s.updated_at || 0).getTime() });
+      }
+    }
+    if (candidates.length === 0) return;
+    // Newest first
+    candidates.sort((a, b) => b.ts - a.ts);
+    const newest = candidates[0];
+    const lastOpenedId = localStorage.getItem('sp_last_auto_opened_notif') || '';
+    if (newest.id === lastOpenedId) return; // same as last time → don't keep popping it open
+    localStorage.setItem('sp_last_auto_opened_notif', newest.id);
+    // Small delay so the calendar renders first
+    setTimeout(() => openEventPaneDirect(newest.id), 400);
+  } catch(e) { /* never block init on a notif-open failure */ }
 }
 
 function buildActivitiesByDate() {

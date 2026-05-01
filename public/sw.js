@@ -2,7 +2,7 @@
 // Phase 1: Offline shell + static asset caching
 // Phase 2: Push notification handling (added below)
 
-const CACHE_VERSION = 'spontany-v10';
+const CACHE_VERSION = 'spontany-v11';
 const STATIC_ASSETS = [
   '/styles.css',
   '/logo.svg',
@@ -98,9 +98,26 @@ self.addEventListener('push', event => {
     actions: data.actions || [],
   };
 
-  event.waitUntil(
-    self.registration.showNotification(data.title || 'Spontany', options)
-  );
+  // Bump the home-screen / launcher icon badge so the user sees there's
+  // something waiting even when the app is closed. If the server includes
+  // an `unread` count in the payload, use that; otherwise fall back to a
+  // generic dot via setAppBadge() with no arg. Always best-effort — silently
+  // ignored on browsers without the Badging API.
+  const badgeUpdate = (async () => {
+    if (!('setAppBadge' in self.navigator)) return;
+    try {
+      if (typeof data.unread === 'number' && data.unread > 0) {
+        await self.navigator.setAppBadge(data.unread);
+      } else {
+        await self.navigator.setAppBadge();
+      }
+    } catch(e) { /* permission denied or unsupported */ }
+  })();
+
+  event.waitUntil(Promise.all([
+    self.registration.showNotification(data.title || 'Spontany', options),
+    badgeUpdate,
+  ]));
 });
 
 // ── Notification click: open/focus the app and navigate to target ────────
