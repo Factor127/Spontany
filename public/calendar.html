@@ -4729,6 +4729,36 @@ function renderEventPane(data) {
     </div>`;
   }
 
+  // ── Change-my-RSVP for non-creator invitees ──────────────────────────
+  // Once a non-creator responds, openOutingDetail routes them to the event
+  // pane (not the invite pane), which has no RSVP control — they had no
+  // way to decline after confirming. Show their current status + a Change
+  // button that bounces back to the invite pane (which has the full
+  // confirm/maybe/decline flow). Skip when they're not on the invitee
+  // list (shouldn't happen but defensive).
+  if (!is_creator) {
+    const myInvRow = invitees.find(i => i.user_id === myUserId);
+    if (myInvRow) {
+      const _statusLabel = ({
+        confirmed: '✓ Confirmed',
+        accepted:  '✓ Accepted',
+        maybe:     '~ Maybe',
+        declined:  '✗ Declined',
+        ignored:   '— Ignored',
+        pending:   'Pending',
+      })[myInvRow.status] || myInvRow.status || 'Pending';
+      html += `<div style="padding:8px 16px 4px;display:flex;align-items:center;gap:8px;justify-content:space-between;">
+        <div style="font-size:12px;color:var(--muted);">Your RSVP: <strong style="color:var(--text);">${_statusLabel}</strong></div>
+        <button onclick="openInvitePane('${outing.id}','${myInvRow.id}')"
+                style="background:none;border:1px solid rgba(230,249,82,0.28);border-radius:10px;
+                       padding:6px 12px;color:rgba(230,249,82,0.75);font-size:12px;font-weight:700;
+                       cursor:pointer;font-family:inherit;">
+          Change
+        </button>
+      </div>`;
+    }
+  }
+
   // Suggest changes (invitees - non-creator participants)
   if (!is_creator) {
     html += `<div id="ep-suggest-toggle" style="padding:0 16px 8px;">
@@ -9490,8 +9520,6 @@ async function openSmartCrafter(prefillDate, prefillOpp, prefillSaved, prefillWh
 
   document.getElementById('sc-overlay').classList.add('open');
   _scMarkOpen(); // push history-state guard so Android back closes the wizard
-  document.getElementById('sc-who-row').innerHTML =
-    '<span style="color:var(--muted);font-size:12px;padding:4px;">Loading…</span>';
   document.getElementById('sc-cal-grid').innerHTML = '';
   const _optsEl = document.getElementById('sc-what-opts');
   if (_optsEl) _optsEl.innerHTML = '';
@@ -9500,19 +9528,16 @@ async function openSmartCrafter(prefillDate, prefillOpp, prefillSaved, prefillWh
   document.getElementById('sc-what-unfurl').style.display = 'none';
   scWhatCloseDrop();
 
-  try {
-    const res = await fetch(`/api/smart-suggest?token=${MY_TOKEN}`);
-    if (!res.ok) throw new Error('smart-suggest ' + res.status);
-    _sc.data = await res.json();
-  } catch(e) {
-    console.error('Smart suggest error:', e);
-    _sc.data = { who: [], myFreeDays: [], connFreeDays: {}, suggestions: [] };
-  }
-
-  // Fallback: if API returned no WHO, build from already-loaded allConnections
-  if (!_sc.data.who || _sc.data.who.length === 0) {
-    const approved = (allConnections || []).filter(c => c.status === 'approved');
-    _sc.data.who = approved.map(c => ({
+  // ── Phase 1: render IMMEDIATELY from already-loaded allConnections ──────
+  // The previous implementation awaited /api/smart-suggest before doing any
+  // render — that fetch can take 200–800ms (it queries calendar days for
+  // every connection), so the FAB tap had a visible delay before the WHO
+  // row populated. Use the locally-cached connections as the initial WHO
+  // list so the wizard is interactive instantly; smart-suggest's richer
+  // data (ranking, free-day map) lands in the background and re-renders.
+  const _localWho = (allConnections || [])
+    .filter(c => c && (c.status === 'approved' || c.status === 'pending'))
+    .map(c => ({
       id:      c.id,
       userId:  c.other_user_id,
       name:    c.other_name || 'Unknown',
@@ -9522,34 +9547,56 @@ async function openSmartCrafter(prefillDate, prefillOpp, prefillSaved, prefillWh
       phone:   c.i_am_target ? c.requester_mobile : c.target_mobile,
       score:   0.5,
     }));
-  }
+  _sc.data = { who: _localWho, myFreeDays: [], connFreeDays: {}, suggestions: [] };
 
-  // ── Merge in any connections the API didn't return ────────────────────
-  // smart-suggest filters strictly to status='approved' on the server side,
-  // and there's a small lag window after a new friend is added (especially
-  // when the connection is still 'pending' but already visible on the
-  // contacts page). Augment _sc.data.who with anyone in allConnections
-  // not already present, so the WHO list never lags behind the contacts
-  // page. Both 'approved' and 'pending' are included — user should be
-  // able to invite a pending friend; calendar overlap will just be empty
-  // until both sides are connected, which is fine.
-  if (_sc.data.who && Array.isArray(_sc.data.who)) {
-    const known = new Set(_sc.data.who.map(w => w.id));
-    for (const c of (allConnections || [])) {
-      if (!c || known.has(c.id)) continue;
-      if (c.status !== 'approved' && c.status !== 'pending') continue;
-      _sc.data.who.push({
-        id:      c.id,
-        userId:  c.other_user_id,
-        name:    c.other_name || 'Unknown',
-        initial: (c.other_name || '?')[0].toUpperCase(),
-        photo:   c.other_photo || null,
-        type:    c.relationship_type || 'friend',
-        phone:   c.i_am_target ? c.requester_mobile : c.target_mobile,
-        score:   0.5,
+  // ── Phase 2: refine in the background ───────────────────────────────────
+  // Don't await — let the wizard paint with local data first. When the
+  // server response lands, swap in the richer WHO list (ranked by smart-
+  // suggest), free-day data for the calendar, and re-render.
+  fetch(`/api/smart-suggest?token=${MY_TOKEN}`)
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data || !document.getElementById('sc-overlay')?.classList.contains('open')) return;
+      // Merge in any locally-known connections the server didn't return
+      // (covers the recent-add lag window where the friend is in
+      // allConnections but smart-suggest hasn't picked them up yet).
+      const knownIds = new Set((data.who || []).map(w => w.id));
+      const augmented = [...(data.who || [])];
+      for (const c of (allConnections || [])) {
+        if (!c || knownIds.has(c.id)) continue;
+        if (c.status !== 'approved' && c.status !== 'pending') continue;
+        augmented.push({
+          id: c.id, userId: c.other_user_id, name: c.other_name || 'Unknown',
+          initial: (c.other_name || '?')[0].toUpperCase(),
+          photo: c.other_photo || null, type: c.relationship_type || 'friend',
+          phone: c.i_am_target ? c.requester_mobile : c.target_mobile, score: 0.5,
+        });
+      }
+      _sc.data.who = augmented;
+      _sc.data.myFreeDays   = data.myFreeDays   || [];
+      _sc.data.connFreeDays = data.connFreeDays || {};
+      _sc.data.suggestions  = data.suggestions  || [];
+      // Re-assign colors for any newly-added entries
+      _sc.data.who.forEach((w, i) => {
+        if (!_sc.colors[w.id]) {
+          const existing = socialConnections.find(sc => sc.id === w.id);
+          _sc.colors[w.id] = existing?.color || _SC_COLOR_PALETTE[i % _SC_COLOR_PALETTE.length];
+        }
       });
-    }
-  }
+      // Re-pick best date now that we have free-day data
+      if (!prefillDate && !prefillSaved && (!_sc.selWho || _sc.selWho.size === 0)) {
+        const better = _scBestDate();
+        if (better && better !== _sc.selDate) {
+          _sc.selDate = better;
+          const _d = new Date(better + 'T00:00:00');
+          _scCalYear  = _d.getFullYear();
+          _scCalMonth = _d.getMonth();
+        }
+      }
+      renderSCWho();
+      renderSCWhen();
+    })
+    .catch(e => console.error('Smart suggest error:', e));
 
   // Assign colours - reuse existing socialConnections colours if available
   _sc.data.who.forEach((w, i) => {

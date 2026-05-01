@@ -471,8 +471,10 @@ select { background:#1a1a1a !important; color:var(--text) !important; border-col
         </div>
 
         <div class="field-group" style="position:relative;">
-          <label class="field-label" for="user-city">City <span style="color:var(--muted);font-weight:400;">(optional)</span></label>
-          <input id="user-city" class="field-input" type="text" placeholder="e.g. London, New York…" autocomplete="off" oninput="onCityInput()">
+          <label class="field-label" for="user-city">City of residence <span style="color:#e53935;">*</span></label>
+          <input id="user-city" class="field-input" type="text" placeholder="e.g. London, New York…"
+                 autocomplete="off" oninput="onCityInput();checkStep1Ready()">
+          <p style="font-size:11px;color:var(--muted);margin:4px 0 0;">We'll use this to match you with local events.</p>
           <div id="city-ac-drop" style="position:absolute;top:100%;left:0;right:0;z-index:300;background:#1a1a1a;border:1px solid rgba(230,249,82,0.20);border-radius:10px;overflow:hidden;display:none;margin-top:2px;"></div>
         </div>
 
@@ -960,13 +962,17 @@ document.addEventListener('click', e => {
 
 function checkStep1Ready() {
   const name = document.getElementById('user-name')?.value.trim();
+  const city = document.getElementById('user-city')?.value.trim();
   const btn  = document.getElementById('step1-next-btn');
   if (!btn) return;
+  // City is now required (used to match local events / opportunities). The
+  // previous "(optional)" was leaving most accounts without a city, which
+  // broke opportunity matching.
   if (MODE === 'invite') {
     const email = document.getElementById('user-email')?.value.trim();
-    btn.disabled = !(name && email && email.includes('@'));
+    btn.disabled = !(name && email && email.includes('@') && city);
   } else {
-    btn.disabled = !name;
+    btn.disabled = !(name && city);
   }
 }
 
@@ -979,7 +985,9 @@ function selectRelStatus(val) {
 
 function step1Next() {
   const name = document.getElementById('user-name')?.value.trim();
+  const city = document.getElementById('user-city')?.value.trim();
   if (!name) return;
+  if (!city) return; // Now required — used to match local opportunities.
   if (MODE === 'invite') {
     const email = document.getElementById('user-email')?.value.trim();
     if (!email || !email.includes('@')) return;
