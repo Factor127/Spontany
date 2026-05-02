@@ -50,6 +50,29 @@ function isKidFreeOn(userId, date) {
   return (row.owner || 'coparent') !== 'self';
 }
 
+// Inverse — does the user have their kids on this date? An unset day is
+// NOT a kids day (matches isKidFreeOn's default-to-free contract).
+function hasKidsOn(userId, date) {
+  const row = db.getDayForUser(userId, date);
+  if (!row) return false;
+  return row.owner === 'self';
+}
+
+// Heuristic kid-friendliness check — no explicit column on opportunities yet.
+// Tags + category match against a small known-good vocabulary. False
+// negatives (e.g. a tagged-just-as-"food" restaurant that's actually
+// kid-friendly) lose out today; the user can curate by adding tags later.
+const KID_TAG_RE = /\b(kid|kids|kid-friendly|family|family-friendly|children|child|playground|stroller|toddler|teen)\b/i;
+const KID_CATEGORIES = new Set([
+  'family', 'kids', 'park', 'museum', 'zoo', 'aquarium',
+  'playground', 'arcade', 'mini-golf', 'bowling',
+]);
+function isKidFriendly(opp) {
+  if (KID_CATEGORIES.has((opp.category || '').toLowerCase())) return true;
+  const raw = typeof opp.tags === 'string' ? opp.tags : JSON.stringify(opp.tags || []);
+  return KID_TAG_RE.test(raw);
+}
+
 // User's free days (next 60), used by the legacy non-date path.
 function userFreeDays(userId) {
   const today = new Date(); today.setHours(0,0,0,0);
@@ -147,21 +170,38 @@ function decorateCard(opp, extras = {}) {
 // ── Bucket builders (date-scoped path) ───────────────────────────────────────
 
 // Bucket A — relational. For each currently-active social connection that
-// overlaps with the user on `date`, find venues/non-dated opps matching the
-// intersection of (user prefs ∩ per-connection prefs). Partner first, then
-// friends. is_pulse_worthy fires when overlap is scarce in next 30 days.
+// matches the user's custody state on `date`, find venues/non-dated opps
+// matching the intersection of (user prefs ∩ per-connection prefs). Partner
+// first, then friends. is_pulse_worthy fires when overlap is scarce.
+//
+// Two custody-state branches:
+//   • User kid-free → match friends who are ALSO kid-free, any venue
+//   • User has kids → match friends who ALSO have kids that day, KID-FRIENDLY
+//     venues only ("playdate mode"). Same parent on duty + same vibe.
 function getRelationalIdeas(userId, date, userCats) {
   const conns = db.getActiveSocialConnections(userId);
   if (!conns.length) return [];
-  if (!isKidFreeOn(userId, date)) return [];      // user has kids, not socially free
+
+  const userHasKids = hasKidsOn(userId, date);
+  // Only fall through to "no relational" when the day is undecided (no row).
+  // We DO want kid-friendly relational ideas on a self-day.
+  const dayRow = db.getDayForUser(userId, date);
+  if (!dayRow) return [];
 
   // Pull venue/activity opps once (non-dated, relational ideas are venue-shaped).
   const allOpps = db.getOpportunitiesForMatching({ from_date: date });
-  const venues  = allOpps.filter(o => o.type !== 'event' && !o.start_time);
+  let venues  = allOpps.filter(o => o.type !== 'event' && !o.start_time);
+  if (userHasKids) venues = venues.filter(isKidFriendly);
 
   const cards = [];
   for (const c of conns) {
-    if (!isKidFreeOn(c.other_user_id, date)) continue;     // friend has kids
+    // Match friends to the user's custody state. Kids-day = friends who also
+    // have their kids; kid-free day = friends also kid-free.
+    const friendMatches = userHasKids
+      ? hasKidsOn(c.other_user_id, date)
+      : isKidFreeOn(c.other_user_id, date);
+    if (!friendMatches) continue;
+
     const friendCats = connectionCategories(userId, c.id, userCats);
     const cats       = intersectCats(userCats, friendCats);
     const isPartner  = c.relationship_type === 'partner';
@@ -173,16 +213,30 @@ function getRelationalIdeas(userId, date, userCats) {
       .slice(0, 3);
 
     for (const v of picks) {
-      const lead = isPartner
-        ? `You & ${c.other_name} are both free — ${v.title}`
-        : `${c.other_name} is free too — ${v.title}`;
+      let lead;
+      if (userHasKids) {
+        lead = isPartner
+          ? `Both with kids — ${v.title} works for everyone`
+          : `${c.other_name} has kids too — kid-friendly ${v.title}`;
+      } else {
+        lead = isPartner
+          ? `You & ${c.other_name} are both free — ${v.title}`
+          : `${c.other_name} is free too — ${v.title}`;
+      }
+      // Score tiers (partner > friend; kid-free slightly above kids-day to
+      // reflect the higher activity flexibility, but kid-friendly gets a
+      // visibility boost via scarcity since these days are rarer overlaps).
+      let score;
+      if (isPartner) score = userHasKids ? 0.95 : 1.00;
+      else if (scarce) score = userHasKids ? 0.93 : 0.92;
+      else             score = userHasKids ? 0.88 : 0.85;
+
       cards.push(decorateCard(v, {
         reason_type:     'relational',
         lead_reason:     lead,
         is_pulse_worthy: !isPartner && scarce,    // partner overlaps don't pulse
         connection_ids:  [c.id],
-        // Score: partner=highest, then friend; nudged by scarcity for friends.
-        match_score:     isPartner ? 1.0 : (scarce ? 0.92 : 0.85),
+        match_score:     score,
       }));
     }
   }
@@ -193,20 +247,35 @@ function getRelationalIdeas(userId, date, userCats) {
 }
 
 // Bucket B — dated events on this exact date. Pulse-worthy by definition.
+// On a kids day we restrict to kid-friendly events and surface friends who
+// also have their kids; on a kid-free day we surface events broadly and
+// list kid-free friends.
 function getEventIdeas(userId, date, userCats) {
   const allOpps = db.getOpportunitiesForMatching({ from_date: date });
-  const events  = allOpps.filter(o => o.start_time && o.start_time.slice(0,10) === date);
+  let events  = allOpps.filter(o => o.start_time && o.start_time.slice(0,10) === date);
   if (!events.length) return [];
 
-  // For tagging "friend also free": precompute overlapping connections for date.
-  let overlappingFriends = [];
-  if (isKidFreeOn(userId, date)) {
-    overlappingFriends = db.getActiveSocialConnections(userId)
-      .filter(c => isKidFreeOn(c.other_user_id, date));
-  }
+  const userHasKids = hasKidsOn(userId, date);
+  if (userHasKids) events = events.filter(isKidFriendly);
+  if (!events.length) return [];
+
+  // Match friends to user's custody state — same logic as the relational
+  // bucket. On a kids day "matching custody" means friends who also have
+  // their kids that day; on a kid-free day, friends also kid-free.
+  const allConns = db.getActiveSocialConnections(userId);
+  const overlappingFriends = userHasKids
+    ? allConns.filter(c => hasKidsOn(c.other_user_id, date))
+    : allConns.filter(c => isKidFreeOn(c.other_user_id, date));
+
   const friendNote = overlappingFriends.length
-    ? ` · ${overlappingFriends.map(f => f.other_name).slice(0,2).join(' & ')} free too`
+    ? (userHasKids
+        ? ` · ${overlappingFriends.map(f => f.other_name).slice(0,2).join(' & ')} have kids too`
+        : ` · ${overlappingFriends.map(f => f.other_name).slice(0,2).join(' & ')} free too`)
     : '';
+  // Partner-first ordering for circles. Connection.id list is consumed by
+  // the client to render up to 3 profile circles per card.
+  overlappingFriends.sort((a, b) =>
+    (b.relationship_type === 'partner' ? 1 : 0) - (a.relationship_type === 'partner' ? 1 : 0));
   const friendIds = overlappingFriends.map(f => f.id);
 
   return events.map(o => {
@@ -227,10 +296,12 @@ function getEventIdeas(userId, date, userCats) {
 // Bucket C — solo / vibe fallback. Only used when A and B are empty for the
 // requested date. Surfaces top user-pref venue/activity matches, no time anchor.
 // When the user hasn't set any activity prefs yet, fall back to a base score
-// so we still surface generic ideas instead of an empty list.
-function getSoloIdeas(userId, userCats, limit = 5) {
+// so we still surface generic ideas instead of an empty list. On a kids day,
+// strict-filter to kid-friendly — better empty than "go to a wine bar".
+function getSoloIdeas(userId, userCats, limit = 5, opts = {}) {
   const allOpps  = db.getOpportunitiesForMatching({ from_date: fmt(new Date()) });
-  const venues   = allOpps.filter(o => !o.start_time);
+  let venues     = allOpps.filter(o => !o.start_time);
+  if (opts.kidFriendlyOnly) venues = venues.filter(isKidFriendly);
   const noPrefs  = userCats.length === 0;
 
   const ranked = venues.map(o => {
@@ -267,7 +338,8 @@ async function matchForUser(userId, { date = null, limit = 20, category = null, 
     const relational = getRelationalIdeas(userId, date, userCats).filter(c => !dismissed.has(c.id));
     const events     = getEventIdeas(userId, date, userCats).filter(c => !dismissed.has(c.id));
     const solo       = (relational.length === 0 && events.length === 0)
-      ? getSoloIdeas(userId, userCats, 5).filter(c => !dismissed.has(c.id))
+      ? getSoloIdeas(userId, userCats, 5, { kidFriendlyOnly: hasKidsOn(userId, date) })
+          .filter(c => !dismissed.has(c.id))
       : [];
 
     let cards = [...relational, ...events, ...solo];
