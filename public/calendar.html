@@ -3485,46 +3485,6 @@ function _bounceToLogin() {
       if (m) { _sharedUrl = m[0]; break; }
     }
   }
-  // ── On-phone diagnostic banner (no DevTools needed) ───────────────────
-  // Shows for ~12s whenever the page loads with ANY query params, so we
-  // can confirm on a phone whether the share-target chain is delivering
-  // URLs and which SW version is actually controlling. Tap ✕ to dismiss.
-  if (window.location.search || _sharedUrl) {
-    try {
-      const banner = document.createElement('div');
-      banner.id = 'share-debug-banner';
-      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#fbbf24;color:#000;padding:10px 14px;font:12px/1.4 -apple-system,monospace;box-shadow:0 2px 8px rgba(0,0,0,.3);max-height:50vh;overflow-y:auto;';
-      const escQ = (window.location.search || '(empty)').replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
-      // Read any prior share trace so we can display what happened on the
-      // last share attempt (the trace is written by _openCrafterWithSharedUrl
-      // and persists across the login round-trip via localStorage).
-      let traceHtml = '';
-      try {
-        const trace = JSON.parse(localStorage.getItem('_share_trace') || '[]');
-        if (trace.length) {
-          traceHtml = '<div style="margin-top:6px;border-top:1px solid rgba(0,0,0,.2);padding-top:6px;"><b>Last share trace:</b><div style="font-size:11px;line-height:1.5;">' + trace.map(t => '· ' + t.replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;')).join('<br>') + '</div></div>';
-        }
-      } catch(e) {}
-
-      banner.innerHTML = '<div style="display:flex;justify-content:space-between;gap:8px;font-weight:700;margin-bottom:4px;"><span>🔍 share-target debug</span><span onclick="this.parentNode.parentNode.remove()" style="cursor:pointer;padding:0 6px;">✕</span></div>'
-        + '<div>SW cache: <b id="share-debug-sw">checking…</b></div>'
-        + '<div>Query: <code style="word-break:break-all;">' + escQ + '</code></div>'
-        + '<div>Parsed URL: <code>' + (_sharedUrl || '(none)') + '</code></div>'
-        + traceHtml;
-      document.body.prepend(banner);
-      // Probe SW cache name async (best-effort)
-      if (window.caches?.keys) {
-        caches.keys().then(keys => {
-          const sp = keys.find(k => k.startsWith('spontany-')) || '(no spontany cache)';
-          const el = document.getElementById('share-debug-sw');
-          if (el) el.textContent = sp;
-        }).catch(() => {});
-      }
-      // Stays longer when we have a trace so you can read it
-      const ttl = traceHtml ? 25000 : 12000;
-      setTimeout(() => banner?.remove(), ttl);
-    } catch(e) {}
-  }
   if (_openEventId) {
     // Clean the URL so refresh doesn't re-open the pane
     const cleanUrl = window.location.pathname + '?token=' + MY_TOKEN;
@@ -9474,54 +9434,28 @@ const _sc = {
 // Web Share Target entry point: opens the crafter, drops the shared URL
 // into the link input, and runs the same unfurl path as if the user had
 // pasted it manually. Called from init() when ?shareUrl=… is present.
-//
-// Step-by-step trace persisted to localStorage so the on-page debug banner
-// can show exactly where the chain broke (no DevTools needed on phone).
 async function _openCrafterWithSharedUrl(sharedUrl) {
-  const trace = [];
-  const log = (step) => {
-    trace.push(`${new Date().toISOString().slice(11,19)} ${step}`);
-    try { localStorage.setItem('_share_trace', JSON.stringify(trace)); } catch(e) {}
-    console.log('[share]', step);
-  };
-
-  if (!sharedUrl) { log('called with no URL — abort'); return; }
-  log('start: ' + sharedUrl);
+  if (!sharedUrl) return;
 
   try {
     let domain = sharedUrl;
     try { domain = new URL(sharedUrl).hostname.replace(/^www\./, ''); } catch(e) {}
     if (typeof showToast === 'function') showToast(`🔗 Got ${domain}`);
-    log('toast shown');
   } catch(e) {}
 
   try {
-    if (typeof openSmartCrafter !== 'function') {
-      log('✗ openSmartCrafter is not defined');
-      return;
-    }
-    log('calling openSmartCrafter…');
+    if (typeof openSmartCrafter !== 'function') return;
     await openSmartCrafter();
-    log('openSmartCrafter resolved');
-
-    const overlay = document.getElementById('sc-overlay');
-    log('overlay open=' + (overlay?.classList.contains('open') ? 'yes' : 'no'));
 
     const input = document.getElementById('sc-what-input');
-    if (!input) { log('✗ sc-what-input missing in DOM'); return; }
-    log('input found');
-
+    if (!input) return;
     input.value = sharedUrl;
-    log('input.value set');
 
     if (typeof scWhatInputChange === 'function') {
       scWhatInputChange(sharedUrl);
-      log('scWhatInputChange fired');
-    } else {
-      log('✗ scWhatInputChange not defined');
     }
   } catch(e) {
-    log('✗ exception: ' + (e?.message || e));
+    console.error('[share] failed:', e);
     if (typeof showToast === 'function') showToast('⚠ Share failed: ' + (e.message || 'unknown'));
   }
 }
