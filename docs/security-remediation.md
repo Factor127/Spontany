@@ -75,7 +75,7 @@ When picking up cold: `Read docs/security-remediation.md and continue with the n
 - **Where:** `server.js:333-371` (route handler), `db.js` (schema + backfill + INSERT statements), `routes/api.js:68,149` (user-creation callers stamp unsubscribe_token at insert), `utils/emailSequence.js` (every template now passes `user.unsubscribe_token` via `ensureUnsubToken()` lazy-fill helper).
 - **Why:** `?token=` in unsubscribe links was the user's `access_token` — anyone seeing a forwarded email got full account access.
 - **Fix:** `unsubscribe_token TEXT` column with unique index `idx_users_unsub_token`. Startup backfill stamps random UUID on every NULL row. New users get one stamped at INSERT. `/api/email/unsubscribe` now looks up by `unsubscribe_token`; any other token returns 410 Gone with a "use a recent email" page. The weekly-digest email in `routes/api.js` does not currently include an unsubscribe link, so no change needed there.
-- **Commit:** _pending_
+- **Commit:** `36678c0`
 
 ### [ ] C5 — RSVP PATCH IDOR
 - **Where:** `routes/api.js:1325-1342`.
