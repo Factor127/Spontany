@@ -29,7 +29,7 @@ function isOptedOut(phone) {
 }
 
 function baseUrl(req) {
-  return process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+  return req.app.locals.BASE_URL;
 }
 
 // Compute overlap between two date sets (arrays of YYYY-MM-DD).

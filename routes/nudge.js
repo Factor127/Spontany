@@ -125,7 +125,7 @@ router.post('/nudge/webhook', express.urlencoded({ extended: false }), (req, res
   }
   // Reconstruct the URL Twilio signed against. Behind Railway's proxy, use
   // BASE_URL so the host matches what Twilio was configured with in console.
-  const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
+  const baseUrl = req.app.locals.BASE_URL;
   const fullUrl = `${baseUrl}${req.originalUrl}`;
   if (!sig || !twilio.validateRequest(authToken, sig, fullUrl, req.body)) {
     console.warn('[nudge] webhook signature invalid; rejecting');

@@ -37,8 +37,7 @@ const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USER_URL  = 'https://www.googleapis.com/oauth2/v3/userinfo';
 
 function googleRedirectUri(req) {
-  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-  return `${base}/auth/google/callback`;
+  return `${req.app.locals.BASE_URL}/auth/google/callback`;
 }
 
 // Lazy-load Resend so the app still starts if the package isn't installed yet
@@ -209,8 +208,7 @@ router.get('/auth/google/contacts', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) return res.status(500).send('Google is not configured.');
 
-  const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-  const redirectUri = `${base}/auth/google/contacts/callback`;
+  const redirectUri = `${req.app.locals.BASE_URL}/auth/google/contacts/callback`;
 
   const params = new URLSearchParams({
     client_id:     clientId,
@@ -234,8 +232,7 @@ router.get('/auth/google/contacts/callback', async (req, res) => {
   if (!user) return res.redirect('/login');
 
   try {
-    const base = process.env.BASE_URL || `${req.protocol}://${req.get('host')}`;
-    const redirectUri = `${base}/auth/google/contacts/callback`;
+    const redirectUri = `${req.app.locals.BASE_URL}/auth/google/contacts/callback`;
 
     // Exchange code for tokens
     const tokenRes = await fetch(GOOGLE_TOKEN_URL, {

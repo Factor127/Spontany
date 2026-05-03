@@ -895,7 +895,7 @@ router.post('/cron/weekly-digest', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const BASE_URL = process.env.BASE_URL || `https://${req.headers.host}`;
+  const BASE_URL = req.app.locals.BASE_URL;
   const today    = new Date(); today.setHours(0, 0, 0, 0);
   const endDate  = new Date(today); endDate.setDate(today.getDate() + 14);
   const fromStr  = toDateStr(today);

@@ -4,6 +4,14 @@ const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Refuse to boot in production without an explicit BASE_URL. Outbound emails
+// (digest, sequence, magic link) and OAuth redirect URIs depend on this; if it
+// falls back to req.headers.host an attacker can spoof the Host header to
+// inject their own domain into a victim's verification email. (H2)
+if (process.env.NODE_ENV === 'production' && !process.env.BASE_URL) {
+  console.error('FATAL: BASE_URL must be set in production. Refusing to boot.');
+  process.exit(1);
+}
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
 // ── A/B Testing Variants ─────────────────────────────────────────────────────
