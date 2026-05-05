@@ -5,6 +5,21 @@ const { v4: uuidv4 } = require('uuid');
 const { db, q } = require('../db');
 const { createBucket, rateLimitAllow } = require('../utils/rateLimit');
 
+// Session cookie (P2-Server). httpOnly so XSS can't read it; lax SameSite so
+// magic-link redirects (cross-origin POST → GET to our domain) still attach
+// it; secure only in production because dev runs over plain http.
+const SESSION_COOKIE = 'spontany_session';
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
+function setSessionCookie(res, token) {
+  res.cookie(SESSION_COOKIE, token, {
+    httpOnly: true,
+    secure:   process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path:     '/',
+    maxAge:   SESSION_MAX_AGE,
+  });
+}
+
 // Magic-link rate limit buckets. Per-IP caps scripted spam; per-email caps
 // Resend cost amplification + inbox abuse on a single victim.
 const RL_IP   = createBucket();
@@ -160,6 +175,7 @@ router.get('/auth/verify/:token', (req, res) => {
   q.useMagicLink.run(req.params.token);
   const newToken = uuidv4();
   q.updateUserToken.run(newToken, link.user_id);
+  setSessionCookie(res, newToken);
 
   const user = q.getUserById.get(link.user_id);
 
@@ -327,6 +343,7 @@ router.get('/auth/google/callback', async (req, res) => {
       // Issue a fresh session token
       const newToken = uuidv4();
       q.updateUserToken.run(newToken, user.id);
+      setSessionCookie(res, newToken);
 
       return res.redirect(
         user.role === 'owner'

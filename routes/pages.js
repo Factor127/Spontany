@@ -5,9 +5,15 @@ const { q } = require('../db');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
 
+// Cookie first (P2-Server), then ?token= for back-compat with bookmarks
+// and the redirect leg of magic-link verify. Returns null if neither present.
+function pageToken(req) {
+  return (req.cookies && req.cookies.spontany_session) || req.query.token || null;
+}
+
 // Admin panel (protected by ADMIN_TOKEN env var)
 router.get('/admin', (req, res) => {
-  if (!req.query.token) return res.status(403).send('<h2>Access denied</h2><p>Include ?token= in the URL.</p>');
+  if (!pageToken(req)) return res.status(403).send('<h2>Access denied</h2><p>Include ?token= in the URL.</p>');
   res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(PUBLIC, 'admin.html'));
 });
@@ -48,7 +54,7 @@ router.get('/setup', (req, res) => {
 
 // Unified calendar - works for all authenticated users
 router.get('/calendar', (req, res) => {
-  const token = req.query.token;
+  const token = pageToken(req);
   // Preserve deep-link params (e.g. openEvent) through login redirect
   const openEvent = req.query.openEvent;
   const loginUrl = openEvent ? `/login?next=${encodeURIComponent('/calendar?openEvent=' + openEvent)}` : '/login';
@@ -60,7 +66,7 @@ router.get('/calendar', (req, res) => {
 
 // Profile management
 router.get('/profile', (req, res) => {
-  const token = req.query.token;
+  const token = pageToken(req);
   if (!token) return res.redirect('/login');
   const user = q.getUserByToken.get(token);
   if (!user) return res.redirect('/login');
@@ -69,7 +75,7 @@ router.get('/profile', (req, res) => {
 
 // Connections management page
 router.get('/connections', (req, res) => {
-  const token = req.query.token;
+  const token = pageToken(req);
   if (!token) return res.redirect('/login');
   const user = q.getUserByToken.get(token);
   if (!user) return res.redirect('/login');
@@ -112,18 +118,23 @@ router.get('/invite/:token', (req, res) => {
 
 // Kids month export (clean printable single-month view)
 router.get('/kids-export', (req, res) => {
-  const token = req.query.token;
+  const token = pageToken(req);
   if (!token) return res.redirect('/login');
   const user = q.getUserByToken.get(token);
   if (!user) return res.redirect('/login');
   res.sendFile(path.join(PUBLIC, 'kids-export.html'));
 });
 
-// Legacy partner route - redirect to unified calendar
+// Legacy partner route - redirect to unified calendar.
+// If we already have a session cookie, redirect WITHOUT echoing the token in
+// the URL (P2-Server) — the cookie carries auth. Fall back to ?token= only
+// when the request came in via the legacy query-string path.
 router.get('/partner', (req, res) => {
+  const cookieToken = req.cookies && req.cookies.spontany_session;
+  if (cookieToken) return res.redirect('/calendar');
   const token = req.query.token;
   if (!token) return res.redirect('/login');
-  return res.redirect(token ? `/calendar?token=${token}` : '/login');
+  return res.redirect(`/calendar?token=${token}`);
 });
 
 // RSVP landing page - no auth required, rsvp_token in URL

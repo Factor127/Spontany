@@ -36,6 +36,12 @@ app.set('trust proxy', 1);
 // own limit (set inside routes/api.js). Caps payload-based DoS / memory abuse.
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+// Cookie parsing for the session cookie (P2-Server). Must come before any
+// route that reads `req.cookies`. Referrer-Policy: same-origin blunts query-
+// string token leakage during the back-compat window where ?token= URLs
+// still work — outgoing links to third parties no longer carry the URL.
+app.use(require('cookie-parser')());
+app.use((req, res, next) => { res.setHeader('Referrer-Policy', 'same-origin'); next(); });
 
 // ── A/B intercept for /match and /match.html (ad traffic entry point) ──────
 // Must be registered BEFORE express.static and the pages router so we can

@@ -14,7 +14,11 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
 function requireToken(req, res) {
-  const token = req.query.token || req.body?.token;
+  // Cookie first (P2-Server), then header / body / query for back-compat.
+  const token = (req.cookies && req.cookies.spontany_session)
+             || req.headers['x-access-token']
+             || req.body?.token
+             || req.query.token;
   if (!token) { res.status(401).json({ error: 'missing_token' }); return null; }
   const user = db.getUserByToken(token);
   if (!user)  { res.status(401).json({ error: 'invalid_token' }); return null; }
