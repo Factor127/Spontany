@@ -92,6 +92,87 @@
     .top-contrib-row:last-child { border-bottom:none; }
     .top-contrib-name { flex:1; font-weight:600; }
     .top-contrib-stat { color:#6b7280; font-size:12px; }
+
+    /* ── Mobile ─────────────────────────────────────────────────────────────
+       Phones can't fit 8 tabs in a 360px row, can't show side-by-side flow
+       charts, and iOS Safari zooms inputs whose font-size is under 16px on
+       focus. This block fixes all three plus tightens padding. */
+    @media (max-width: 768px) {
+      .topbar { padding: 12px 14px; gap: 10px; }
+      .topbar h1 { font-size: 15px; }
+
+      .tabs {
+        margin: 12px 0 0; padding: 4px 12px;
+        max-width: none; border-radius: 0;
+        background: #e5e7eb;
+        flex-wrap: nowrap; overflow-x: auto;
+        -webkit-overflow-scrolling: touch; scrollbar-width: none;
+      }
+      .tabs::-webkit-scrollbar { display: none; }
+      .tab { flex: 0 0 auto; padding: 8px 14px; font-size: 13px; }
+
+      .panel { padding: 14px 12px 32px; }
+
+      .stats { gap: 8px; margin-bottom: 14px; }
+      .stat-card { padding: 10px 12px; min-width: 0; flex: 1 1 calc(50% - 4px); }
+      .stat-num { font-size: 22px; }
+      .stat-label { font-size: 10px; }
+
+      /* iOS Safari zooms inputs whose computed font-size < 16px on focus.
+         Force 16px here to keep the page steady when typing. */
+      .toolbar select,
+      .toolbar input,
+      input[type="text"],
+      input[type="search"],
+      input[type="url"],
+      input[type="email"],
+      input[type="date"],
+      select,
+      textarea {
+        font-size: 16px !important;
+      }
+      .toolbar { gap: 8px; }
+      .toolbar select,
+      .toolbar input { width: 100%; }
+      .toolbar > .btn { flex: 1 1 auto; }
+
+      /* Tables already overflow-x on .tbl-wrap; just shrink their cell padding
+         so wider columns fit on screen without horizontal scroll where possible. */
+      table { font-size: 12px; }
+      th, td { padding: 8px 10px; }
+
+      /* Outreach + Interviews modals/wrappers use inline padding 0 24px and
+         max-width caps that cause horizontal cropping on small screens. */
+      #panel-outreach > div[style*="padding: 0 24px"],
+      #panel-interviews > div[style*="padding: 0 24px"] {
+        padding: 0 4px !important;
+        max-width: 100% !important;
+      }
+      #outreach-preview-modal > div,
+      #iv-modal > div { padding: 16px !important; max-width: 100% !important; }
+
+      /* Side-by-side Screen Flow / Exit Screens stacks vertically on phone. */
+      #panel-analytics > div[style*="grid-template-columns:1fr 1fr"] {
+        grid-template-columns: 1fr !important;
+        gap: 16px !important;
+      }
+
+      /* Network graph: 680px is too tall on a phone. Keep it usable but smaller. */
+      #network-canvas { height: 420px !important; }
+
+      /* Long step-bar rows: collapse the fixed 140px label column on phones. */
+      .step-bar-row { grid-template-columns: 100px 1fr 50px 50px !important; gap: 6px !important; }
+
+      /* Outreach template bar: stop horizontal cramping. */
+      #outreach-tpl-bar { gap: 6px; }
+    }
+
+    @media (max-width: 480px) {
+      .topbar h1 { font-size: 14px; letter-spacing: 0.3px; }
+      .tab { padding: 8px 12px; font-size: 12px; }
+      .panel { padding: 12px 10px 28px; }
+      .stat-card { flex-basis: 100%; }
+    }
   </style>
 <script src="https://t.contentsquare.net/uxa/c6f898e9cb3d8.js"></script>
 <!-- vis-network: 2D force-directed graph with physics, zoom, drag — used in the Network tab -->
