@@ -4,11 +4,9 @@ const router  = express.Router();
 const { db, q } = require('../db');
 
 function requireToken(req, res) {
-  // Cookie first (P2-Server), then header / body / query for back-compat.
+  // Cookie + X-Access-Token only. See comment in routes/api.js.
   const token = (req.cookies && req.cookies.spontany_session)
-             || req.headers['x-access-token']
-             || req.body?.token
-             || req.query.token;
+             || req.headers['x-access-token'];
   if (!token) { res.status(401).json({ error: 'Missing token' }); return null; }
   const user = q.getUserByToken.get(token);
   if (!user)  { res.status(401).json({ error: 'Invalid token' }); return null; }

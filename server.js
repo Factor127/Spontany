@@ -41,7 +41,45 @@ app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 // string token leakage during the back-compat window where ?token= URLs
 // still work — outgoing links to third parties no longer carry the URL.
 app.use(require('cookie-parser')());
-app.use((req, res, next) => { res.setHeader('Referrer-Policy', 'same-origin'); next(); });
+app.use((req, res, next) => {
+  // Already-set: Referrer-Policy keeps tokens out of cross-origin Referer.
+  res.setHeader('Referrer-Policy', 'same-origin');
+  // Stop MIME sniffing — without this, a user upload served as text could be
+  // interpreted as a script by older browsers.
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  // Prevent the app from being framed for clickjacking. CSP frame-ancestors
+  // below is the modern equivalent; XFO is the legacy header for old browsers.
+  res.setHeader('X-Frame-Options', 'DENY');
+  // HSTS only over HTTPS in production — sending it on plain http does
+  // nothing, and we don't want to lock dev http into https. 180 days is a
+  // safe ramp; revisit for preload once stable.
+  if (process.env.NODE_ENV === 'production' && (req.secure || req.headers['x-forwarded-proto'] === 'https')) {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  }
+  // Conservative CSP: locks down the dangerous primitives (plugins, framing,
+  // <base href> hijack, form posting to attacker domains) without breaking
+  // the existing third-party scripts (Hotjar, Meta Pixel, ContentSquare,
+  // Google Fonts/Maps, FB image). A strict script-src would need a per-page
+  // audit; that's a future task. img/style/font directives are wide-open by
+  // design — the app pulls images from many third parties.
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self' https: data:",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:",
+      "style-src 'self' 'unsafe-inline' https:",
+      "img-src 'self' data: blob: https:",
+      "font-src 'self' data: https:",
+      "connect-src 'self' https:",
+      "media-src 'self' data: https:",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+    ].join('; ')
+  );
+  next();
+});
 
 // ── A/B intercept for /match and /match.html (ad traffic entry point) ──────
 // Must be registered BEFORE express.static and the pages router so we can
@@ -165,6 +203,7 @@ app.use('/', pagesRouter);
 const { db: _db } = require('./db');
 const { sendEmail } = require('./utils/email');
 const { createBucket, rateLimitAllow } = require('./utils/rateLimit');
+const { escHtml } = require('./utils/html');
 
 // Per-IP + per-email caps on the unauth waitlist signup. Caps drive-by spam
 // without blocking real signups (legit users submit once).
@@ -365,8 +404,7 @@ app.get('/api/email/unsubscribe', (req, res) => {
       const user = db.prepare('SELECT id, name FROM users WHERE unsubscribe_token = ?').get(token);
       if (user) {
         db.prepare('UPDATE users SET unsubscribed = 1 WHERE id = ?').run(user.id);
-        const safeFirst = String((user.name || '').split(' ')[0] || '')
-          .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        const safeFirst = escHtml((user.name || '').split(' ')[0] || '');
         return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Unsubscribed</title>
           <style>body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#eeeef8;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
           .box{text-align:center;max-width:400px;padding:40px;} h1{font-size:24px;margin-bottom:12px;} p{color:rgba(238,238,248,0.6);font-size:14px;line-height:1.6;}

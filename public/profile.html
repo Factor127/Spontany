@@ -324,15 +324,17 @@ select { background:#1a1a1a !important; color:var(--text) !important; border-col
 <script>
 const params = new URLSearchParams(location.search);
 const MY_TOKEN = params.get('token') || localStorage.getItem('myToken');
+// Presence-only "logged in" marker; real auth is the httpOnly session cookie.
+const HAS_AUTH = !!MY_TOKEN || /(?:^|; )spontany_auth=1(?:;|$)/.test(document.cookie);
 let userRole = null;
 
 // Use location.replace (not href) on auth bounces so /login doesn't get
 // pushed onto history — system back from /profile should go to wherever
 // the user came from, not to the login screen.
-if (!MY_TOKEN) { window.location.replace('/login'); }
-else if (!params.has('token')) {
-  // Keep token in URL so back/forward navigation preserves auth state and
-  // doesn't bounce through /login.
+if (!HAS_AUTH) { window.location.replace('/login'); }
+else if (MY_TOKEN && !params.has('token')) {
+  // Only echo the legacy URL token for sessions that had one. Pure-cookie
+  // sessions stay clean (no token in browser history / Referer / bookmarks).
   try { history.replaceState(null, '', location.pathname + '?token=' + MY_TOKEN); } catch(e) {}
 }
 

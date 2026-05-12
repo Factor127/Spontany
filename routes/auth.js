@@ -9,10 +9,23 @@ const { createBucket, rateLimitAllow } = require('../utils/rateLimit');
 // magic-link redirects (cross-origin POST → GET to our domain) still attach
 // it; secure only in production because dev runs over plain http.
 const SESSION_COOKIE = 'spontany_session';
+// Companion presence-only marker. NOT the token — just a "logged in" flag
+// the client JS reads via document.cookie to gate its bounce-to-login. The
+// real auth is the httpOnly session cookie that the browser auto-attaches.
+// Keeping the value out of JS reach means an XSS bug can't trivially exfil
+// the session — which is exactly what motivated dropping ?token= from URLs.
+const AUTH_FLAG_COOKIE = 'spontany_auth';
 const SESSION_MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
 function setSessionCookie(res, token) {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
+    secure:   process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path:     '/',
+    maxAge:   SESSION_MAX_AGE,
+  });
+  res.cookie(AUTH_FLAG_COOKIE, '1', {
+    httpOnly: false,       // intentionally JS-readable
     secure:   process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path:     '/',
@@ -169,10 +182,27 @@ router.get('/auth/verify/:token', (req, res) => {
     );
   }
 
-  // Existing user - mark link used and issue a fresh session token
-  // Track returning user verification
+  // Existing user - mark link used and issue a fresh session token.
+  // useMagicLink is atomic (UPDATE … WHERE used_at IS NULL); if a concurrent
+  // verify already burned this link, treat as expired so the second clicker
+  // can't quietly displace the first's freshly issued session.
   try { q.insertAnalyticsEvent.run(require('uuid').v4(), 'email_verified', 'server_' + link.email, link.user_id, null, null, null, null, '/api/auth/verify', null, null, JSON.stringify({ email: link.email, is_new: false })); } catch(e) {}
-  q.useMagicLink.run(req.params.token);
+  const consumed = q.useMagicLink.run(req.params.token);
+  if (consumed.changes !== 1) {
+    return res.status(410).send(`
+      <!DOCTYPE html><html><head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Link already used</title>
+        <link rel="stylesheet" href="/styles.css">
+      </head><body style="text-align:center;padding:60px 24px;">
+        <div style="font-size:48px;margin-bottom:16px;">⏰</div>
+        <h2>This link was just used</h2>
+        <p style="color:#5f6368;">Magic links are single-use. Request a new one if you need to log in again.</p>
+        <a href="/" class="btn btn-primary" style="display:inline-flex;margin-top:8px;">Request a new link →</a>
+      </body></html>
+    `);
+  }
   const newToken = uuidv4();
   q.updateUserToken.run(newToken, link.user_id);
   setSessionCookie(res, newToken);
@@ -182,20 +212,18 @@ router.get('/auth/verify/:token', (req, res) => {
   // If a deep-link target was carried through (?next=…), honour it so the
   // user lands on the page they originally tried to reach (e.g. share-target
   // sent them to /calendar.html?shareUrl=…). Otherwise default to their
-  // role-appropriate calendar.
+  // role-appropriate calendar. The session is carried by the httpOnly cookie
+  // (set by setSessionCookie above) — we deliberately do NOT echo the token
+  // into the URL, because tokens-in-URLs leak via browser history, Referer,
+  // bookmarks, screenshots, and any analytics/extension that reads location.
   const next = req.query.next ? String(req.query.next) : null;
   if (next && /^\/(?!\/)/.test(next)) {
     // Only allow same-origin paths (must start with single slash) — guards
     // against open-redirect abuse where ?next=https://evil.com would bounce
-    // a freshly-issued token off-domain.
-    const sep = next.includes('?') ? '&' : '?';
-    return res.redirect(next + sep + 'token=' + newToken);
+    // a freshly-issued session off-domain.
+    return res.redirect(next);
   }
-  return res.redirect(
-    user.role === 'owner'
-      ? `/calendar?token=${newToken}`
-      : `/partner?token=${newToken}`
-  );
+  return res.redirect(user.role === 'owner' ? '/calendar' : '/partner');
 });
 
 // ── GET /auth/google/contacts ─────────────────────────────────────────────────
@@ -340,28 +368,27 @@ router.get('/auth/google/callback', async (req, res) => {
       // Link Google ID if not already stored
       if (!user.google_id) q.updateGoogleId.run(googleId, user.id);
 
-      // Issue a fresh session token
+      // Issue a fresh session token. Carried by the httpOnly cookie set
+      // above — never echoed into the redirect URL.
       const newToken = uuidv4();
       q.updateUserToken.run(newToken, user.id);
       setSessionCookie(res, newToken);
 
-      return res.redirect(
-        user.role === 'owner'
-          ? `/calendar?token=${newToken}`
-          : `/partner?token=${newToken}`
-      );
+      return res.redirect(user.role === 'owner' ? '/calendar' : '/partner');
     }
 
     // 4. Brand-new user - send to setup with google context pre-filled
-    //    We store a one-time magic link so setup can claim it
+    //    We store a one-time magic link so setup can claim it. The verified
+    //    google_id is stamped onto the magic_link itself (server-side), NOT
+    //    passed back through the URL → body — trusting a body-supplied
+    //    google_id is a Google-account hijack vector.
     const linkToken  = uuidv4();
     const expiresAt  = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
     q.createMagicLink.run(linkToken, email, null, expiresAt);
+    q.setMagicLinkGoogleId.run(googleId, linkToken);
 
-    // Pre-store google_id so it gets linked when they complete setup
-    // We pass it as a URL param; setup route will include it in POST /api/users/setup
     return res.redirect(
-      `/setup?magic=${linkToken}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}&google_id=${encodeURIComponent(googleId)}`
+      `/setup?magic=${linkToken}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`
     );
 
   } catch(err) {
@@ -371,3 +398,6 @@ router.get('/auth/google/callback', async (req, res) => {
 });
 
 module.exports = router;
+// Exported for the /partner legacy bridge in routes/pages.js, which converts
+// `?token=…` query auth into the standard cookie session.
+module.exports.setSessionCookie = setSessionCookie;

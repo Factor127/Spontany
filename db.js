@@ -59,6 +59,10 @@ try { db.exec('ALTER TABLE outing_invitees ADD COLUMN decline_note TEXT'); } cat
 // Groups epic: a magic link used for a group-join invite carries the group_id.
 // NULL for any non-group link (email auth, partner invites).
 try { db.exec('ALTER TABLE magic_links ADD COLUMN group_id TEXT'); } catch(e) { /* already exists */ }
+// google_id: set ONLY by /auth/google/callback after Google verifies the
+// identity. /users/setup reads it back from the link instead of trusting a
+// google_id from the request body — the body version was a takeover vector.
+try { db.exec('ALTER TABLE magic_links ADD COLUMN google_id TEXT'); } catch(e) { /* already exists */ }
 try { db.exec('ALTER TABLE outings ADD COLUMN title TEXT'); } catch(e) { /* already exists */ }
 // Per-user "I already bought tickets" flag for events with external link.
 // Tracked separately for the creator (on outings) and each invitee (on outing_invitees).
@@ -683,11 +687,20 @@ const q = {
   createMagicLink: db.prepare(
     'INSERT INTO magic_links (id, email, user_id, expires_at) VALUES (?, ?, ?, ?)'
   ),
+  // Stamps a verified google_id onto an existing magic link. ONLY callable
+  // from /auth/google/callback, where Google has already confirmed identity.
+  setMagicLinkGoogleId: db.prepare(
+    'UPDATE magic_links SET google_id = ? WHERE id = ?'
+  ),
   getMagicLink: db.prepare(
     "SELECT * FROM magic_links WHERE id = ? AND used_at IS NULL AND expires_at > datetime('now')"
   ),
+  // Atomic consume: the AND used_at IS NULL guard turns two concurrent
+  // /users/setup POSTs with the same magic token from a TOCTOU into a
+  // race the database resolves — one .run() returns changes=1, the other
+  // changes=0. Callers MUST check result.changes before proceeding.
   useMagicLink: db.prepare(
-    "UPDATE magic_links SET used_at = datetime('now') WHERE id = ?"
+    "UPDATE magic_links SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL"
   ),
 
   getConnectionByRequester: db.prepare(

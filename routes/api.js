@@ -3,7 +3,8 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const { db, q, generateDaysFromPattern, checkAndRenewConnection, upsertManyDays, toDateStr, normalizePhone } = require('../db');
-const { assertPublicHttpUrl } = require('../utils/ssrf');
+const { assertPublicHttpUrl, safeFetch } = require('../utils/ssrf');
+const { escHtml } = require('../utils/html');
 
 // 2MB is the practical ceiling for an HTML calendar backup; larger uploads
 // almost certainly mean abuse or accidental wrong-file selection.
@@ -14,15 +15,33 @@ const { sendCalendarInvite, sendEmail } = require('../utils/email');
 const { sendPush } = require('../utils/push');
 const { sendSMSToUser, sendSMS } = require('../utils/sms');
 const { startSequence } = require('../utils/emailSequence');
+const { createBucket, rateLimitAllow } = require('../utils/rateLimit');
+const { timingSafeEq } = require('../utils/secrets');
+
+// Friend request fan-out caps. Without these, an attacker enumerates user_ids
+// via /users/search, fires DELETE+POST loops, and SMS-spams every user at
+// our cost. Three layers: per-pair (the spam target), per-sender (the
+// attacker), per-IP (the source).
+const FRIEND_REQ_PAIR   = createBucket();
+const FRIEND_REQ_SENDER = createBucket();
+const FRIEND_REQ_IP     = createBucket();
+
+// User-lookup buckets. Both /users/search (by name) and /users/find-by-phone
+// (by exact phone) confirm the presence of specific people on Spontany — a
+// classic enumeration primitive. We rate-limit per user so an attacker can't
+// methodically walk a phone book or name list against the directory.
+const USER_LOOKUP_BUCKET = createBucket();
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 
 function requireToken(req, res) {
-  // Cookie first (P2-Server), then header / body / query for back-compat.
+  // Cookie is the source of truth; X-Access-Token header is allowed for
+  // non-browser callers (none today, but kept as the documented mechanism).
+  // We deliberately do NOT accept ?token= or body.token — tokens in those
+  // places leak into access logs, browser history, Referer, and screenshots.
+  // Legacy ?token= bookmarks bridge to a cookie in routes/pages.js.
   const token = (req.cookies && req.cookies.spontany_session)
-             || req.headers['x-access-token']
-             || req.body?.token
-             || req.query.token;
+             || req.headers['x-access-token'];
   if (!token) { res.status(401).json({ error: 'Missing token' }); return null; }
   const user = q.getUserByToken.get(token);
   if (!user) { res.status(403).json({ error: 'Invalid token' }); return null; }
@@ -54,7 +73,7 @@ function requireOwner(req, res) {
 // Multi-tenant: any email can set up their own account (no single-owner constraint).
 // Requires a valid magic token (proof of email ownership from /api/auth/request flow).
 router.post('/users/setup', (req, res) => {
-  const { magic, name, pattern_type, pattern_data, anchor_date, days, google_id,
+  const { magic, name, pattern_type, pattern_data, anchor_date, days,
           work_schedule, mobile, age, relationship_status, city, city_place_id, photo } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
   if (!magic) return res.status(400).json({ error: 'Email verification required. Please use the link sent to your email.' });
@@ -64,15 +83,26 @@ router.post('/users/setup', (req, res) => {
   if (!link) return res.status(400).json({ error: 'Your verification link is invalid or has expired. Please request a new one.' });
   if (link.user_id) return res.status(409).json({ error: 'This email already has an account. Please log in instead.' });
 
-  // Consume the magic link and create the account
-  q.useMagicLink.run(magic);
+  // Atomic consume: useMagicLink only updates the row if used_at IS NULL, so
+  // a second concurrent /users/setup POST with the same token sees changes=0
+  // and is rejected. Without this, both POSTs could pass the getMagicLink
+  // check before either marked it used → two user rows for one verified
+  // email.
+  const consumed = q.useMagicLink.run(magic);
+  if (consumed.changes !== 1) {
+    return res.status(409).json({ error: 'This verification link was just used. Please log in instead.' });
+  }
 
   const id = uuidv4();
   const token = uuidv4();
   q.createUserWithEmail.run(id, name.trim(), 'owner', token, link.email, uuidv4());
 
-  // Link Google ID if the user came via Google SSO
-  if (google_id)           q.updateGoogleId.run(google_id, id);
+  // Link Google identity ONLY if the magic link itself was stamped with one
+  // by /auth/google/callback. We never accept google_id from req.body —
+  // trusting client input there lets an attacker who holds any valid magic
+  // link claim someone else's Google identity, so when the real Google user
+  // later does SSO they're routed into the attacker's account.
+  if (link.google_id)      q.updateGoogleId.run(link.google_id, id);
   if (work_schedule)       db.prepare('UPDATE users SET work_schedule = ? WHERE id = ?').run(JSON.stringify(work_schedule), id);
   if (mobile)              db.prepare('UPDATE users SET mobile = ? WHERE id = ?').run(mobile.trim(), id);
   if (age)                 db.prepare('UPDATE users SET age = ? WHERE id = ?').run(age, id);
@@ -674,6 +704,15 @@ router.post('/suggestions/:id/approve', (req, res) => {
   if (s.to_user_id !== me.id) return res.status(403).json({ error: 'Not your suggestion to approve' });
   if (s.status !== 'pending') return res.status(409).json({ error: 'Suggestion already handled' });
 
+  // Reverify the sender is still in an approved connection with me. A
+  // pending suggestion from a previously-connected user must not be
+  // applicable after we've disconnected them — otherwise an ex-partner can
+  // still mutate the recipient's calendar via a stale pending row.
+  const conn = q.getConnectionBetween.get(me.id, s.from_user_id, s.from_user_id, me.id);
+  if (!conn || conn.status !== 'approved') {
+    return res.status(403).json({ error: 'No active connection with the sender of this suggestion' });
+  }
+
   const changes = JSON.parse(s.changes);
 
   // Apply each change - proposed_owner is always from the sender's (from_user_id) perspective
@@ -847,18 +886,20 @@ router.post('/ical/import', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'Valid URL required' });
 
-  // SSRF guard: ical URL is user-supplied; block private/loopback/metadata.
-  try { assertPublicHttpUrl(url); }
-  catch (e) {
-    return res.status(400).json({ error: e.code === 'invalid_url' ? 'Valid URL required' : 'URL not allowed' });
-  }
-
+  // safeFetch validates URL+resolved-IP, follows redirects through the same
+  // gauntlet, and caps body size — covers SSRF, DNS rebinding, and slow-drip
+  // memory DoS in one call.
   let text;
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return res.status(502).json({ error: `Could not fetch calendar (HTTP ${r.status})` });
-    text = await r.text();
+    const out = await safeFetch(url, { timeoutMs: 8000, maxBytes: 4 * 1024 * 1024 });
+    if (!out.resp.ok) return res.status(502).json({ error: `Could not fetch calendar (HTTP ${out.resp.status})` });
+    text = out.text;
   } catch (e) {
+    if (e?.code === 'invalid_url')        return res.status(400).json({ error: 'Valid URL required' });
+    if (e?.code === 'blocked_scheme')     return res.status(400).json({ error: 'Only http and https URLs are allowed' });
+    if (e?.code === 'blocked_host')       return res.status(400).json({ error: 'URL not allowed' });
+    if (e?.code === 'too_many_redirects') return res.status(502).json({ error: 'Too many redirects' });
+    if (e?.code === 'response_too_large') return res.status(413).json({ error: 'Calendar file is too large' });
     return res.status(502).json({ error: 'Could not reach that URL - check it is public and correct' });
   }
 
@@ -895,7 +936,7 @@ router.post('/ical/import', async (req, res) => {
 //
 router.post('/cron/weekly-digest', async (req, res) => {
   const secret = req.headers['x-cron-secret'];
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
+  if (!process.env.CRON_SECRET || !timingSafeEq(secret, process.env.CRON_SECRET)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
@@ -962,14 +1003,18 @@ router.post('/cron/weekly-digest', async (req, res) => {
   // Send one email per user
   let sent = 0;
   for (const [, user] of Object.entries(notify)) {
-    const calUrl = `${BASE_URL}/calendar?token=${user.token}`;
+    // Plain /calendar — never put a session token in an email URL. Tokens
+    // leak via Resend logs, recipient mail-server logs, mail-forwarding, mail
+    // clients, and (when clicked) every proxy on the path. Recipients log in
+    // through the normal cookie/login flow when they click through.
+    const calUrl = `${BASE_URL}/calendar`;
 
-    // Build overlap lines
+    // Build overlap lines (names are HTML-escaped; dates are server-formatted)
     const overlapHtml = user.overlaps.map(o =>
       `<div style="margin-bottom:14px;">
-        <div style="font-weight:700;font-size:14px;color:#202124;">${o.withName}</div>
+        <div style="font-weight:700;font-size:14px;color:#202124;">${escHtml(o.withName)}</div>
         ${o.dates.map(d =>
-          `<div style="font-size:13px;color:#e65100;font-weight:600;padding:3px 0;">📅 ${d}</div>`
+          `<div style="font-size:13px;color:#e65100;font-weight:600;padding:3px 0;">📅 ${escHtml(d)}</div>`
         ).join('')}
       </div>`
     ).join('');
@@ -983,7 +1028,7 @@ router.post('/cron/weekly-digest', async (req, res) => {
   <div style="font-size:22px;font-weight:900;color:#bf360c;margin-bottom:2px;letter-spacing:-0.01em;">Spontany</div>
   <div style="font-size:12px;color:#999;margin-bottom:28px;">Your free time, made visible</div>
 
-  <p style="font-size:17px;font-weight:700;margin:0 0 8px;">Hey ${user.name} 👋</p>
+  <p style="font-size:17px;font-weight:700;margin:0 0 8px;">Hey ${escHtml(user.name)} 👋</p>
   <p style="font-size:14px;color:#555;margin:0 0 20px;line-height:1.5;">
     You have some upcoming free time that overlaps with people you know.<br>
     Don't let the window slip - make a plan while there's still time.
@@ -1306,6 +1351,11 @@ router.post('/rsvp/:token', (req, res) => {
 // ── Outings ───────────────────────────────────────────────────────────────
 
 // POST /api/outings - create a new outing with invitees
+// Max people an outing can be sent to in one shot. Caps SMS/push fan-out
+// cost and abuse: a malicious user can't register one account and blast
+// invites at hundreds of strangers' user-ids in a single request.
+const OUTING_INVITEE_LIMIT = 30;
+
 router.post('/outings', (req, res) => {
   const me = requireToken(req, res);
   if (!me) return;
@@ -1314,6 +1364,39 @@ router.post('/outings', (req, res) => {
           venue, venue_address, venue_place_id, opportunity_id, image_url, status, event_time } = req.body;
   if (!Array.isArray(invitees) || (invitees.length === 0 && status !== 'saved')) {
     return res.status(400).json({ error: 'invitees required' });
+  }
+  if (invitees.length > OUTING_INVITEE_LIMIT) {
+    return res.status(400).json({ error: `Too many invitees (max ${OUTING_INVITEE_LIMIT})` });
+  }
+
+  // Authz on the inviting set: every invitee with a userId must be someone
+  // the creator is allowed to push notifications + create plans for. Without
+  // this any logged-in user can fan SMS/push/plans onto arbitrary user_ids.
+  // Allowed sources:
+  //   1. Approved 1:1 connections (coparent/partner/friend).
+  //   2. Accepted members of a group the creator owns, when via_group_id
+  //      points at that group.
+  const allowedUserIds = new Set();
+  for (const c of q.getAllConnectionsForUser.all(me.id, me.id, me.id, me.id, me.id, me.id)) {
+    if (c.status === 'approved') allowedUserIds.add(c.other_user_id);
+  }
+  let validatedGroup = null;
+  if (via_group_id) {
+    const group = q.getGroupById.get(via_group_id);
+    if (group && group.creator_user_id === me.id) {
+      validatedGroup = group;
+      for (const m of q.getAcceptedGroupMembers.all(group.id)) {
+        if (m.user_id) allowedUserIds.add(m.user_id);
+      }
+    }
+  }
+
+  for (const inv of invitees) {
+    if (inv && inv.userId && inv.userId !== me.id && !allowedUserIds.has(inv.userId)) {
+      return res.status(403).json({
+        error: 'One or more invitees are not connected to you. Connect first, then invite.',
+      });
+    }
   }
 
   const outingId = pregenId || uuidv4();
@@ -1328,14 +1411,10 @@ router.post('/outings', (req, res) => {
     q.createOutingInvitee.run(invId, outingId, inv.userId || null, inv.name, inv.phone || null, inv.rsvpToken || null);
   }
 
-  // Audit trail: record this outing as group-fanned, only if the caller owns
-  // the cited group. Silently skipped for invalid/unowned ids — the outing
-  // itself still succeeds, the host just won't see the "Invited via X" tag.
-  if (via_group_id) {
-    const group = q.getGroupById.get(via_group_id);
-    if (group && group.creator_user_id === me.id) {
-      q.recordOutingGroupOrigin.run(outingId, via_group_id);
-    }
+  // Audit trail: record this outing as group-fanned. We already validated
+  // ownership above when expanding allowedUserIds, so reuse that result.
+  if (validatedGroup) {
+    q.recordOutingGroupOrigin.run(outingId, validatedGroup.id);
   }
 
   // If there's a linked opportunity and a date, create a plan for the creator
@@ -2342,6 +2421,13 @@ router.get('/users/find-by-phone', (req, res) => {
   const me = requireToken(req, res);
   if (!me) return;
 
+  // Enumeration guard: cap one user at 20 lookups per hour, 100 per day.
+  // Legit "add my partner by phone" use is one or two lookups per session.
+  if (!rateLimitAllow(USER_LOOKUP_BUCKET, `phone:hour:${me.id}`,  60 * 60 * 1000,       20) ||
+      !rateLimitAllow(USER_LOOKUP_BUCKET, `phone:day:${me.id}`,   24 * 60 * 60 * 1000, 100)) {
+    return res.status(429).json({ error: 'Too many lookups. Please wait a bit and try again.' });
+  }
+
   const raw = req.query.phone || '';
   const normalized = normalizePhone(raw);
   if (!normalized || normalized.replace(/\D/g, '').length < 7) {
@@ -2362,11 +2448,19 @@ router.get('/users/find-by-phone', (req, res) => {
   });
 });
 
-// ── GET /api/users/search?q= - search users by name or email ──
-// Returns safe public profiles only. Never returns token, email, or sensitive fields.
+// ── GET /api/users/search?q= - search users by name ──
+// Returns safe public profiles only. City is only returned for users that
+// already share an approved connection — without that gate, anyone can walk
+// the user list and harvest name + city pairs.
 router.get('/users/search', (req, res) => {
   const me = requireToken(req, res);
   if (!me) return;
+
+  // Enumeration guard: cap one user at 30 searches per hour, 150 per day.
+  if (!rateLimitAllow(USER_LOOKUP_BUCKET, `search:hour:${me.id}`, 60 * 60 * 1000,       30) ||
+      !rateLimitAllow(USER_LOOKUP_BUCKET, `search:day:${me.id}`,  24 * 60 * 60 * 1000, 150)) {
+    return res.status(429).json({ error: 'Too many searches. Please wait a bit and try again.' });
+  }
 
   const query = (req.query.q || '').trim();
   if (query.length < 2) return res.json({ users: [] });
@@ -2381,11 +2475,14 @@ router.get('/users/search', (req, res) => {
 
   const users = results.map(u => {
     const existing = q.getConnectionBetween.get(me.id, u.id, u.id, me.id);
+    // City is PII (name + city ≈ real-world identification). Only reveal it
+    // once the two users have an approved relationship.
+    const isApproved = existing && existing.status === 'approved';
     return {
       id:   u.id,
       name: u.name,
       photo: u.photo || null,
-      city:  u.city  || null,
+      city:  isApproved ? (u.city || null) : null,
       connection: existing ? { id: existing.id, status: existing.status } : null,
     };
   });
@@ -2406,10 +2503,24 @@ router.post('/connections/request-friend', (req, res) => {
   if (!target) return res.status(404).json({ error: 'User not found' });
   if (target.id === me.id) return res.status(400).json({ error: 'Cannot connect to yourself' });
 
-  // Check for existing connection
+  // Check for existing connection BEFORE consuming rate-limit tokens — a
+  // legit no-op repeat shouldn't burn through the budget.
   const existing = q.getConnectionBetween.get(me.id, target.id, target.id, me.id);
   if (existing && (existing.status === 'pending' || existing.status === 'approved')) {
     return res.json({ connection_id: existing.id, status: existing.status, already_exists: true });
+  }
+
+  // Rate-limit BEFORE creating + notifying. Three layers:
+  //   pair    — same attacker can't repeatedly request → DELETE → re-request
+  //             to spam SMS at one victim (the SMS body costs us money).
+  //   sender  — caps total daily fan-out from one account.
+  //   ip      — caps fan-out from one origin source.
+  const ip = req.ip || 'unknown';
+  const pairKey = `${me.id}>${target.id}`;
+  if (!rateLimitAllow(FRIEND_REQ_PAIR,   pairKey, 24 * 60 * 60 * 1000, 1) ||
+      !rateLimitAllow(FRIEND_REQ_SENDER, me.id,   24 * 60 * 60 * 1000, 30) ||
+      !rateLimitAllow(FRIEND_REQ_IP,     ip,      60 * 60 * 1000,      30)) {
+    return res.status(429).json({ error: 'Too many connection requests. Please wait before trying again.' });
   }
 
   const connId = uuidv4();

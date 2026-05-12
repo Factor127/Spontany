@@ -239,6 +239,8 @@ const params = new URLSearchParams(location.search);
 // Fall back to localStorage so back/forward nav doesn't lose auth and bounce
 // through /login. Match the pattern used by calendar/profile/connections.
 const MY_TOKEN = params.get('token') || localStorage.getItem('myToken');
+// Presence-only "logged in" marker; real auth is the httpOnly session cookie.
+const HAS_AUTH = !!MY_TOKEN || /(?:^|; )spontany_auth=1(?:;|$)/.test(document.cookie);
 if (MY_TOKEN && !params.has('token')) {
   try { history.replaceState(null, '', location.pathname + '?token=' + MY_TOKEN + (params.get('month') ? '&month=' + params.get('month') : '')); } catch(e) {}
 }
@@ -252,7 +254,7 @@ function toDateStr(d) {
 }
 
 (async function init() {
-  if (!MY_TOKEN) {
+  if (!HAS_AUTH) {
     document.getElementById('calendar-container').textContent = 'Missing token - open from your calendar.';
     return;
   }

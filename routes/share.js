@@ -13,6 +13,7 @@ const router   = express.Router();
 const { db }   = require('../db');
 const { sendSMS, toE164, isValidE164 } = require('../utils/sms');
 const { createBucket, rateLimitAllow, rateLimit } = require('../utils/rateLimit');
+const { escHtml } = require('../utils/html');
 
 // Per-IP gate for the share-create endpoint, applied as middleware. Per-phone
 // is checked inside the handler against the normalized E.164 value so the
@@ -23,12 +24,6 @@ const shareCreateIpLimit = rateLimit({
   max: 10,
 });
 const SHARE_PHONE_BUCKET = createBucket();
-
-function escHtml(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;',
-  }[c]));
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function getMatch(token) {
@@ -107,11 +102,15 @@ router.post('/api/share/:token/submit-a', (req, res) => {
   const m = getMatch(req.params.token);
   if (!m) return res.status(404).json({ error: 'not_found' });
 
-  const schedule = Array.isArray(req.body.schedule) ? req.body.schedule : [];
+  const schedule = Array.isArray(req.body.schedule) ? req.body.schedule.slice(0, 366) : [];
   const phone    = req.body.phone ? toE164(req.body.phone) : null;
 
+  // First-writer-wins on person_a_phone (COALESCE(existing, new)) — anyone
+  // with the share token could otherwise rewrite person_a_phone to a
+  // victim's number, causing the result-notify SMS to be aimed at them
+  // when the match completes.
   db.prepare(`
-    UPDATE match_requests SET person_a_schedule = ?, person_a_phone = COALESCE(?, person_a_phone)
+    UPDATE match_requests SET person_a_schedule = ?, person_a_phone = COALESCE(person_a_phone, ?)
     WHERE token = ?
   `).run(JSON.stringify(schedule), phone, req.params.token);
 
@@ -131,11 +130,14 @@ router.post('/api/share/:token/submit-b', (req, res) => {
   const m = getMatch(req.params.token);
   if (!m) return res.status(404).json({ error: 'not_found' });
 
-  const schedule = Array.isArray(req.body.schedule) ? req.body.schedule : [];
+  const schedule = Array.isArray(req.body.schedule) ? req.body.schedule.slice(0, 366) : [];
   const bName    = (req.body.name || '').trim().slice(0, 60) || null;
 
+  // First-writer-wins on the name too: a second visitor with the share token
+  // shouldn't be able to swap out B's display name (which appears in the
+  // SMS sent to A on completion).
   db.prepare(`
-    UPDATE match_requests SET person_b_schedule = ?, person_b_name = COALESCE(?, person_b_name)
+    UPDATE match_requests SET person_b_schedule = ?, person_b_name = COALESCE(person_b_name, ?)
     WHERE token = ?
   `).run(JSON.stringify(schedule), bName, req.params.token);
 

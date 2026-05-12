@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { db } = require('../db');
 const { sendEmail } = require('../utils/email');
+const { timingSafeEq } = require('../utils/secrets');
 
 // Founder-personal outreach: from the verified updates.spontany.io domain
 // (DKIM/SPF/DMARC pass), reply-to bare spontany.io which forwards via ImprovMX
@@ -44,7 +45,7 @@ function requireAdmin(req, res) {
     res.status(503).json({ error: 'Admin not configured - set ADMIN_TOKEN env var' });
     return false;
   }
-  if (!token || token !== adminToken) {
+  if (!timingSafeEq(token, adminToken)) {
     res.status(403).json({ error: 'Invalid admin token' });
     return false;
   }

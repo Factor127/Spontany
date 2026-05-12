@@ -8,6 +8,7 @@ const router  = express.Router();
 const { db, q }  = require('../db');
 const { sendEmail } = require('../utils/email');
 const { createBucket, rateLimitAllow } = require('../utils/rateLimit');
+const { escHtml } = require('../utils/html');
 
 // Buckets for /api/lp/signup. Per-IP caps automated signup spam; per-email
 // caps magic-link inbox bombing on a single victim. Mirrors the limits on
@@ -187,22 +188,65 @@ router.post('/api/lp/signup', async (req, res) => {
     console.error('[lp signup] insert failed:', e.message);
   }
 
-  // Mint a magic link so the client can redirect into the auth/verify flow.
-  // /api/auth/verify already routes new emails → /setup and existing users → /calendar,
-  // so this single token covers both paths.
-  let redirect = null;
+  // Mint a magic link and EMAIL it. Never return the verify URL in the
+  // response — doing so would let anyone claim any email's account by simply
+  // POSTing the email and following the returned link, completely bypassing
+  // the email-ownership proof that magic-link auth is supposed to provide.
+  let linkToken;
   try {
     const existing = q.getUserByEmail.get(email);
-    const linkToken = uuidv4();
+    linkToken = uuidv4();
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     q.createMagicLink.run(linkToken, email, existing?.id || null, expiresAt);
-    redirect = `/api/auth/verify/${linkToken}`;
   } catch(e) {
     console.error('[lp signup] magic link failed:', e.message);
     return res.status(500).json({ error: 'signup_failed' });
   }
 
-  res.json({ ok: true, redirect });
+  // Build the verify URL using BASE_URL (NOT req.headers.host, which is
+  // attacker-controllable). server.js refuses to boot in prod without it.
+  const BASE_URL  = req.app.locals.BASE_URL;
+  const verifyUrl = `${BASE_URL}/api/auth/verify/${linkToken}`;
+  const greetText = first_name ? `Hi ${first_name},`            : 'Hi there,';
+  const greetHtml = first_name ? `Hi ${escHtml(first_name)},`    : 'Hi there,';
+  const html = `
+    <div style="font-family:system-ui,-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#202124;">
+      <img src="${BASE_URL}/icon-192.png" width="48" height="48" alt="Spontany" style="border-radius:12px;display:block;margin:0 0 10px;">
+      <h1 style="font-size:22px;font-weight:800;margin:0 0 4px;color:#0a0a0a;">Spontany</h1>
+      <p style="color:#5f6368;margin:0 0 24px;font-size:14px;">Finds your moments — before they slip away.</p>
+      <p style="margin:0 0 18px;">${greetHtml}</p>
+      <p style="margin:0 0 20px;">Tap below to set up your Spontany calendar — no password needed.</p>
+      <a href="${verifyUrl}"
+         style="display:inline-block;background:#1a73e8;color:#fff;padding:13px 28px;border-radius:8px;
+                text-decoration:none;font-weight:700;font-size:15px;margin-bottom:24px;">
+        Set up my calendar →
+      </a>
+      <p style="color:#5f6368;font-size:13px;margin:0;">
+        This link expires in 24 hours and can only be used once.<br>
+        If you didn't request this, you can safely ignore this email.
+      </p>
+    </div>
+  `;
+  const bodyText = `${greetText}\n\nTap to set up your Spontany calendar (no password needed):\n${verifyUrl}\n\nThis link expires in 24 hours and can only be used once. If you didn't request this, you can safely ignore this email.`;
+
+  if (process.env.RESEND_API_KEY) {
+    try {
+      await sendEmail({ to: email, subject: 'Set up your Spontany calendar', html, bodyText });
+    } catch(e) {
+      console.error('[lp signup] email send failed:', e?.message || e);
+      // Don't surface the failure as success — the user has no way to log in
+      // without the email. Better to ask them to try again.
+      return res.status(502).json({ error: 'email_failed' });
+    }
+  } else {
+    // Dev/local fallback: print the link to the server console. Mirrors
+    // routes/auth.js. Never returned in the response — that's the bug we're
+    // fixing.
+    console.log(`\n📧 LP SIGNUP MAGIC LINK (email not configured - copy this into your browser):`);
+    console.log(`   ${verifyUrl}\n`);
+  }
+
+  res.json({ ok: true, sent: true });
 });
 
 module.exports = router;

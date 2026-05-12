@@ -740,7 +740,9 @@ const _urlParams   = new URLSearchParams(location.search);
 const INVITE_TOKEN = (window.location.pathname.match(/\/invite\/([^/?]+)/) || [])[1] || null;
 const MAGIC_TOKEN  = _urlParams.get('magic');
 const GOOGLE_NAME  = _urlParams.get('name') || '';
-const GOOGLE_ID    = _urlParams.get('google_id') || '';
+// Note: google_id is NO LONGER read from the URL. The verified id is stamped
+// onto the magic link server-side by /auth/google/callback and applied during
+// /api/users/setup. Trusting a URL/body google_id is a takeover vector.
 const MODE         = INVITE_TOKEN ? 'invite' : 'direct';
 
 // Guard: direct mode requires magic token
@@ -1326,7 +1328,9 @@ async function saveAndFinish() {
     body = {
       magic:               MAGIC_TOKEN,
       name,
-      google_id:           GOOGLE_ID || undefined,
+      // google_id intentionally omitted — server reads it from the magic link
+      // (set during the verified OAuth callback). Sending it from the client
+      // would let an attacker hijack a Google identity.
       mobile:              phone, age, city, city_place_id,
       relationship_status: relStatus,
       work_schedule:       workSchedule,

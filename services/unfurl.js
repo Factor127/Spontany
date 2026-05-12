@@ -1,4 +1,5 @@
 'use strict';
+const { safeFetch } = require('../utils/ssrf');
 // ── Shared link extraction (the parser) ─────────────────────────────────────
 // Single source of truth used by:
 //   - routes/sandbox.js          (paste-to-invite testing lab)
@@ -187,9 +188,13 @@ async function unfurlUrl(url, options = {}) {
   } = options;
 
   const headers = buildHeaders(url);
-  const resp = await fetch(url, { headers, redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
-  const finalUrl = resp.url || url;
-  const html = await resp.text();
+  // safeFetch validates URL+resolved-IP, re-validates each redirect target,
+  // and caps the response body. Critical: the unfurl service is fed
+  // user-supplied URLs from /api/unfurl + opportunity ingestion.
+  const out = await safeFetch(url, { headers, timeoutMs, maxBytes: 4 * 1024 * 1024 });
+  const resp     = out.resp;
+  const finalUrl = out.finalUrl || url;
+  const html     = out.text;
   const domain = (() => { try { return new URL(finalUrl).hostname.replace(/^www\./, ''); } catch(e) { return null; } })();
   const meta = makeMetaExtractor(html);
 
@@ -549,8 +554,11 @@ async function unfurlUrl(url, options = {}) {
     const top = items.slice(0, 6);
     const enriched = await Promise.allSettled(top.map(async (item) => {
       try {
-        const r = await fetch(item.url, { headers, redirect: 'follow', signal: AbortSignal.timeout(6000) });
-        const h = await r.text();
+        // Re-validate sub-URLs through safeFetch — the parent page can list
+        // arbitrary URLs that we'd otherwise hit blindly.
+        const sub = await safeFetch(item.url, { headers, timeoutMs: 6000, maxBytes: 2 * 1024 * 1024 });
+        const r = sub.resp;
+        const h = sub.text;
         const ogTitle = h.match(/<meta[^>]+(?:property|name)=["']og:title["'][^>]+content=["']([^"']{1,300})["']/i)?.[1]
                      || h.match(/<title[^>]*>([^<]{1,200})<\/title>/i)?.[1] || null;
         const ogImage = h.match(/<meta[^>]+(?:property|name)=["']og:image["'][^>]+content=["']([^"']{1,500})["']/i)?.[1] || null;
@@ -641,8 +649,11 @@ async function unfurlUrl(url, options = {}) {
   let price_range = null;
   if (chasePricePage && price == null && price_page_url) {
     try {
-      const pr = await fetch(price_page_url, { headers, redirect: 'follow', signal: AbortSignal.timeout(8000) });
-      const pHtml = await pr.text();
+      // safeFetch re-validates this URL too — even though we picked it from
+      // the parent's anchors, the parent could attacker-control it.
+      const pp = await safeFetch(price_page_url, { headers, timeoutMs: 8000, maxBytes: 2 * 1024 * 1024 });
+      const pr = pp.resp;
+      const pHtml = pp.text;
       const text = pHtml.replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|<[^>]+>/g, ' ');
       const hits = [...text.matchAll(/(?:₪|ILS|NIS|\$|USD|€|EUR)\s*(\d{1,5})|(\d{1,5})\s*(?:₪|ILS|NIS|\$|USD|€|שח|ש״ח)/gi)];
       const nums = hits.map(h => parseInt(h[1] || h[2], 10)).filter(n => n >= 10 && n <= 10000);

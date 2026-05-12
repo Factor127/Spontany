@@ -4,20 +4,25 @@ const router   = express.Router();
 const db       = require('../db');
 const { submitUrl, ingestTicketmaster, ingestGooglePlaces, createOpportunity } = require('../services/opportunityIngestion');
 const { matchForUser, pulseDatesForUser } = require('../services/opportunityMatcher');
-const { assertPublicHttpUrl } = require('../utils/ssrf');
+const { safeFetch } = require('../utils/ssrf');
+const { requireAdmin } = require('./admin');
 
 // ── Background image fetch for opportunities without images ──────────────
 async function _fetchImageForOpportunity(oppId, url) {
-  // SSRF guard: source_url is user-supplied via /api/opportunities/direct.
-  try { assertPublicHttpUrl(url); } catch (e) { return; }
+  // safeFetch validates the URL+resolved-IP, re-validates on every redirect,
+  // and bounds the response body. Best-effort — silently swallow all errors
+  // (this runs in the background after a successful POST response).
+  let html;
   try {
-    const resp = await fetch(url, {
+    const out = await safeFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36' },
-      signal: AbortSignal.timeout(8000),
-      redirect: 'follow'
+      timeoutMs: 8000,
+      maxBytes:  2 * 1024 * 1024,
     });
-    if (!resp.ok) return;
-    const html = await resp.text();
+    if (!out.resp.ok) return;
+    html = out.text;
+  } catch (e) { return; }
+  try {
     const get = (pattern) => { const m = html.match(pattern); return m ? m[1] : null; };
     let img = get(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i)
            || get(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i)
@@ -36,11 +41,9 @@ async function _fetchImageForOpportunity(oppId, url) {
 
 // ── Auth helper (local copy - requireToken not exported from api.js) ──────
 function requireToken(req, res) {
-  // Cookie first (P2-Server), then header / body / query for back-compat.
+  // Cookie + X-Access-Token only. See comment in routes/api.js.
   const token = (req.cookies && req.cookies.spontany_session)
-             || req.headers['x-access-token']
-             || req.body?.token
-             || req.query.token;
+             || req.headers['x-access-token'];
   if (!token) { res.status(401).json({ error: 'Missing token' }); return null; }
   const user = db.getUserByToken(token);
   if (!user)  { res.status(401).json({ error: 'Invalid token' }); return null; }
@@ -230,13 +233,18 @@ router.get('/opportunities/:id', (req, res) => {
 });
 
 // ── PUT /api/opportunities/:id - edit an opportunity ──────────────────────
+// Strictly creator-only. Ownerless / seeded opportunities (created_by IS NULL)
+// must be edited via the admin endpoint (PUT /api/admin/opportunities/:id),
+// which is gated by requireAdmin. The previous check accidentally allowed
+// any logged-in user to mutate ownerless rows.
 router.put('/opportunities/:id', (req, res) => {
   const user = requireToken(req, res); if (!user) return;
   const { id } = req.params;
   const opp = db.getOpportunityById(id);
   if (!opp) return res.status(404).json({ error: 'not found' });
-  // Only creator or admin can edit
-  if (opp.created_by && opp.created_by !== user.id) return res.status(403).json({ error: 'forbidden' });
+  if (!opp.created_by || opp.created_by !== user.id) {
+    return res.status(403).json({ error: 'forbidden' });
+  }
   const { title, type, category, tags, start_time, end_time, location_name,
           location_lat, location_lng, price_tier, confidence_score, visibility } = req.body;
   db.updateOpportunity(
@@ -264,9 +272,11 @@ router.get('/opportunities/submissions', (req, res) => {
   res.json({ submissions: subs.map(s => ({ ...s, parsed_data: s.parsed_data ? JSON.parse(s.parsed_data) : null })) });
 });
 
-// ── POST /api/opportunities/sync - trigger API sync (admin) ──────────────
+// ── POST /api/opportunities/sync - trigger API sync (admin only) ─────────
+// Calls paid Ticketmaster / Google Places APIs, so it must NOT be reachable
+// by ordinary logged-in users — they could otherwise drain quota / spend.
 router.post('/opportunities/sync', async (req, res) => {
-  const user = requireToken(req, res); if (!user) return;
+  if (!requireAdmin(req, res)) return;
   const { source = 'ticketmaster', city, query } = req.body;
   try {
     let result;

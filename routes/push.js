@@ -6,11 +6,10 @@ const { q }    = require('../db');
 const { VAPID_PUBLIC } = require('../utils/push');
 
 function requireToken(req, res) {
-  // Cookie first (P2-Server), then header / body / query for back-compat.
+  // Cookie + X-Access-Token only. No ?token=, no body.token — tokens in URLs
+  // and request bodies leak (see comment in routes/api.js).
   const token = (req.cookies && req.cookies.spontany_session)
-             || req.headers['x-access-token']
-             || req.body?.token
-             || req.query.token;
+             || req.headers['x-access-token'];
   if (!token) { res.status(401).json({ error: 'token required' }); return null; }
   const user = q.getUserByToken.get(token);
   if (!user)  { res.status(401).json({ error: 'invalid token' });  return null; }

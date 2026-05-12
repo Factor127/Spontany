@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const path = require('path');
 const { q } = require('../db');
+const { setSessionCookie } = require('./auth');
 
 const PUBLIC = path.join(__dirname, '..', 'public');
 
@@ -11,9 +12,34 @@ function pageToken(req) {
   return (req.cookies && req.cookies.spontany_session) || req.query.token || null;
 }
 
-// Admin panel (protected by ADMIN_TOKEN env var)
+// Resolve the requesting user from cookie/query and, if the token came in
+// only via the legacy query string, swap it onto the standard cookie session
+// so subsequent API calls don't need ?token= in the URL. Returns the user
+// row or null.
+function resolveUserAndBridge(req, res) {
+  const token = pageToken(req);
+  if (!token) return null;
+  const user = q.getUserByToken.get(token);
+  if (!user) return null;
+  const cookieToken = req.cookies && req.cookies.spontany_session;
+  if (!cookieToken) setSessionCookie(res, token);
+  return user;
+}
+
+// Admin panel. Page shell is gated to a single allowlisted email (env
+// ADMIN_EMAIL) so the admin UI structure isn't visible to ordinary signed-in
+// users. The API endpoints are still independently gated by ADMIN_TOKEN — this
+// is defense in depth, not the primary authorization.
 router.get('/admin', (req, res) => {
-  if (!pageToken(req)) return res.status(403).send('<h2>Access denied</h2><p>Include ?token= in the URL.</p>');
+  const token = pageToken(req);
+  if (!token) return res.status(403).send('<h2>Access denied</h2>');
+  const user = q.getUserByToken.get(token);
+  if (!user) return res.status(403).send('<h2>Access denied</h2>');
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) return res.status(503).send('<h2>Admin not configured</h2><p>Set ADMIN_EMAIL on the server.</p>');
+  if ((user.email || '').toLowerCase() !== adminEmail.toLowerCase()) {
+    return res.status(403).send('<h2>Access denied</h2>');
+  }
   res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(PUBLIC, 'admin.html'));
 });
@@ -54,31 +80,22 @@ router.get('/setup', (req, res) => {
 
 // Unified calendar - works for all authenticated users
 router.get('/calendar', (req, res) => {
-  const token = pageToken(req);
   // Preserve deep-link params (e.g. openEvent) through login redirect
   const openEvent = req.query.openEvent;
   const loginUrl = openEvent ? `/login?next=${encodeURIComponent('/calendar?openEvent=' + openEvent)}` : '/login';
-  if (!token) return res.redirect(loginUrl);
-  const user = q.getUserByToken.get(token);
-  if (!user) return res.redirect(loginUrl);
+  if (!resolveUserAndBridge(req, res)) return res.redirect(loginUrl);
   res.sendFile(path.join(PUBLIC, 'calendar.html'));
 });
 
 // Profile management
 router.get('/profile', (req, res) => {
-  const token = pageToken(req);
-  if (!token) return res.redirect('/login');
-  const user = q.getUserByToken.get(token);
-  if (!user) return res.redirect('/login');
+  if (!resolveUserAndBridge(req, res)) return res.redirect('/login');
   res.sendFile(path.join(PUBLIC, 'profile.html'));
 });
 
 // Connections management page
 router.get('/connections', (req, res) => {
-  const token = pageToken(req);
-  if (!token) return res.redirect('/login');
-  const user = q.getUserByToken.get(token);
-  if (!user) return res.redirect('/login');
+  if (!resolveUserAndBridge(req, res)) return res.redirect('/login');
   res.sendFile(path.join(PUBLIC, 'connections.html'));
 });
 
@@ -118,23 +135,25 @@ router.get('/invite/:token', (req, res) => {
 
 // Kids month export (clean printable single-month view)
 router.get('/kids-export', (req, res) => {
-  const token = pageToken(req);
-  if (!token) return res.redirect('/login');
-  const user = q.getUserByToken.get(token);
-  if (!user) return res.redirect('/login');
+  if (!resolveUserAndBridge(req, res)) return res.redirect('/login');
   res.sendFile(path.join(PUBLIC, 'kids-export.html'));
 });
 
-// Legacy partner route - redirect to unified calendar.
-// If we already have a session cookie, redirect WITHOUT echoing the token in
-// the URL (P2-Server) — the cookie carries auth. Fall back to ?token= only
-// when the request came in via the legacy query-string path.
+// Legacy partner route - redirect to unified calendar. We never echo the
+// token into the URL anymore — auth is the httpOnly session cookie. A
+// legacy ?token=… visit verifies that token is valid first (otherwise the
+// /calendar GET would just bounce them back to /login).
 router.get('/partner', (req, res) => {
   const cookieToken = req.cookies && req.cookies.spontany_session;
   if (cookieToken) return res.redirect('/calendar');
   const token = req.query.token;
   if (!token) return res.redirect('/login');
-  return res.redirect(`/calendar?token=${token}`);
+  const user = q.getUserByToken.get(token);
+  if (!user) return res.redirect('/login');
+  // Legacy bookmark — convert the URL-based token into the standard cookie
+  // session so the user lands on /calendar with no token in the URL.
+  setSessionCookie(res, token);
+  return res.redirect('/calendar');
 });
 
 // RSVP landing page - no auth required, rsvp_token in URL

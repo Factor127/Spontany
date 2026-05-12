@@ -135,8 +135,9 @@ src="https://www.facebook.com/tr?id=2161239351358950&ev=PageView&noscript=1"/></
     </div>
 
     <div id="thanks-view" class="thanks" style="display:none;">
-      <h2>Setting up your account…</h2>
-      <p id="thanks-sub">One moment.</p>
+      <h2>Check your email.</h2>
+      <p id="thanks-sub">We sent a one-time link to <span id="thanks-email" style="color:#c4d630"></span>. Tap it to finish setting up your account.</p>
+      <p style="color:rgba(255,255,255,0.4);font-size:12px;margin-top:14px;">The link expires in 24 hours and works once. Check spam if you don't see it within a minute.</p>
     </div>
   </main>
 
@@ -203,13 +204,13 @@ src="https://www.facebook.com/tr?id=2161239351358950&ev=PageView&noscript=1"/></
             content_name: (variant || 'lp') + '_signup',
             src: params.get('src') || 'cta',
           });
-          // Show "Setting up..." state, then redirect into /setup via the
-          // verify endpoint (handles new vs existing email routing).
+          // Show "check your email" state. The server emails the magic link
+          // — we never auto-redirect into /api/auth/verify, because returning
+          // the verify URL in the response would let anyone claim any email's
+          // account just by submitting that email.
+          document.getElementById('thanks-email').textContent = email;
           document.getElementById('form-view').style.display   = 'none';
           document.getElementById('thanks-view').style.display = 'block';
-          var redirect = (res.body && res.body.redirect) || '/login';
-          // Tiny delay so the "Setting up your account…" frame is perceivable.
-          setTimeout(function() { window.location.replace(redirect); }, 400);
         } else {
           btn.disabled = false;
           btn.textContent = 'Try again';

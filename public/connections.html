@@ -737,9 +737,12 @@ const params   = new URLSearchParams(location.search);
 // Token preference: URL > localStorage. Falling back to localStorage prevents
 // back-nav from a sub-screen landing on a tokenless URL → /login redirect loop.
 const MY_TOKEN = params.get('token') || localStorage.getItem('myToken');
-if (!MY_TOKEN) { location.replace('/'); }
-else if (!params.has('token')) {
-  // Ensure URL carries the token so back/forward never strips it.
+// Presence-only "logged in" marker; real auth is the httpOnly session cookie.
+const HAS_AUTH = !!MY_TOKEN || /(?:^|; )spontany_auth=1(?:;|$)/.test(document.cookie);
+if (!HAS_AUTH) { location.replace('/'); }
+else if (MY_TOKEN && !params.has('token')) {
+  // Only inject the legacy URL token for sessions that had one already.
+  // Cookie-only sessions stay clean — keeps tokens out of browser history.
   try { history.replaceState(null, '', location.pathname + '?token=' + MY_TOKEN); } catch(e) {}
 }
 

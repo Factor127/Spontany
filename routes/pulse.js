@@ -8,17 +8,15 @@ const express = require('express');
 const crypto  = require('crypto');
 const router  = express.Router();
 const db      = require('../db');
-const { assertPublicHttpUrl } = require('../utils/ssrf');
+const { safeFetch } = require('../utils/ssrf');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
 function requireToken(req, res) {
-  // Cookie first (P2-Server), then header / body / query for back-compat.
+  // Cookie + X-Access-Token only. See comment in routes/api.js.
   const token = (req.cookies && req.cookies.spontany_session)
-             || req.headers['x-access-token']
-             || req.body?.token
-             || req.query.token;
+             || req.headers['x-access-token'];
   if (!token) { res.status(401).json({ error: 'missing_token' }); return null; }
   const user = db.getUserByToken(token);
   if (!user)  { res.status(401).json({ error: 'invalid_token' }); return null; }
@@ -51,18 +49,18 @@ async function fetchMetadata(url) {
   const out = { url, title: null, description: null, image_url: null,
                 source_domain: safeDomain(url), event_date: null, event_time: null,
                 site_name: null };
-  // SSRF guard: refuse private/loopback/metadata hosts before any fetch.
-  try { assertPublicHttpUrl(url); }
-  catch (e) { return out; }
+  // safeFetch handles URL validation, DNS-rebinding-safe redirect following,
+  // and bounded body read. Returns out (empty) on any failure — this is a
+  // best-effort enrichment, never fatal.
   let html;
   try {
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': UA, 'Accept': 'text/html,*/*' },
-      signal: AbortSignal.timeout(7000),
-      redirect: 'follow',
+    const r = await safeFetch(url, {
+      headers:   { 'User-Agent': UA, 'Accept': 'text/html,*/*' },
+      timeoutMs: 7000,
+      maxBytes:  2 * 1024 * 1024,
     });
-    if (!resp.ok) return out;
-    html = await resp.text();
+    if (!r.resp.ok) return out;
+    html = r.text;
   } catch (e) {
     return out;
   }

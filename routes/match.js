@@ -3,6 +3,7 @@ const router  = express.Router();
 const { db }  = require('../db');
 const crypto  = require('crypto');
 const { rateLimit } = require('../utils/rateLimit');
+const { escHtml } = require('../utils/html');
 
 // Per-IP gates for the unauth match endpoints. Caps drive-by spam without
 // blocking legitimate per-session use (a real user creating a match and a
@@ -197,19 +198,24 @@ router.post('/match/:token/complete', async (req, res) => {
     const client = getResend();
     const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev';
     const BASE_URL = req.app?.locals?.BASE_URL || process.env.BASE_URL || '';
-    const bName = name || 'Your match';
+    const bName    = name || 'Your match';
+    const bNameEsc = escHtml(bName);
+    // Subject is plain text in MIME — strip line breaks so an attacker can't
+    // inject extra headers. The Resend SDK is HTTP-based so SMTP injection
+    // isn't directly possible, but multi-line subjects look broken in clients.
+    const safeSubject = String(bName).replace(/[\r\n]+/g, ' ').slice(0, 120);
     const matchUrl = `${BASE_URL}/match/${token}`;
     if (client) {
       try {
         await client.emails.send({
           from: FROM_EMAIL,
           to: row.person_a_email,
-          subject: `${bName} filled in their schedule!`,
+          subject: `${safeSubject} filled in their schedule!`,
           html: `
             <div style="font-family:system-ui,-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#202124;">
               <img src="${BASE_URL}/logo.svg" width="48" height="48" alt="Spontany" style="border-radius:12px;display:block;margin:0 0 10px;">
               <h1 style="font-size:22px;font-weight:800;margin:0 0 4px;color:#0a0a0a;">Spontany</h1>
-              <p style="margin:0 0 24px;font-size:18px;font-weight:700;">${bName} just completed the match!</p>
+              <p style="margin:0 0 24px;font-size:18px;font-weight:700;">${bNameEsc} just completed the match!</p>
               <p style="margin:0 0 20px;">Their schedule is in. Tap below to see your overlap and find out when you're both free.</p>
               <a href="${matchUrl}" style="display:inline-block;background:#1a73e8;color:white;padding:13px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:15px;">See your result →</a>
             </div>
@@ -278,7 +284,13 @@ router.post('/match/invite/:token/respond', async (req, res) => {
   if (row.sender_email) {
     const client = getResend();
     const FROM_EMAIL = process.env.FROM_EMAIL || 'onboarding@resend.dev';
-    const recipientLabel = row.recipient_name || 'Your date';
+    const recipientLabel    = row.recipient_name || 'Your date';
+    const recipientLabelEsc = escHtml(recipientLabel);
+    const oppTitleEsc       = escHtml(row.opportunity_title || '');
+    const dateLabelEsc      = escHtml(row.date_label || '');
+    const messageEsc        = escHtml(message || '');
+    // Strip CR/LF so the attacker-controlled label can't break the subject.
+    const recipientSubj = String(recipientLabel).replace(/[\r\n]+/g, ' ').slice(0, 80);
     const BASE_URL = req.app?.locals?.BASE_URL || process.env.BASE_URL || '';
     if (client) {
       try {
@@ -286,16 +298,16 @@ router.post('/match/invite/:token/respond', async (req, res) => {
         await client.emails.send({
           from: FROM_EMAIL,
           to: row.sender_email,
-          subject: isIn ? `${recipientLabel} is in! 🎉` : `${recipientLabel} responded to your invite`,
+          subject: isIn ? `${recipientSubj} is in! 🎉` : `${recipientSubj} responded to your invite`,
           html: `
             <div style="font-family:system-ui,-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#202124;">
               <img src="${BASE_URL}/logo.svg" width="48" height="48" alt="Spontany" style="border-radius:12px;display:block;margin:0 0 10px;">
               <h1 style="font-size:22px;font-weight:800;margin:0 0 4px;color:#0a0a0a;">Spontany</h1>
               <p style="margin:0 0 24px;font-size:18px;font-weight:700;">
-                ${isIn ? `${recipientLabel} is in! 🎉` : `${recipientLabel} can't make this one.`}
+                ${isIn ? `${recipientLabelEsc} is in! 🎉` : `${recipientLabelEsc} can't make this one.`}
               </p>
-              ${row.opportunity_title ? `<p style="margin:0 0 8px;"><strong>${row.opportunity_title}</strong>${row.date_label ? ' · ' + row.date_label : ''}</p>` : ''}
-              ${message ? `<p style="color:#5f6368;font-style:italic;">"${message}"</p>` : ''}
+              ${oppTitleEsc ? `<p style="margin:0 0 8px;"><strong>${oppTitleEsc}</strong>${dateLabelEsc ? ' · ' + dateLabelEsc : ''}</p>` : ''}
+              ${messageEsc ? `<p style="color:#5f6368;font-style:italic;">&ldquo;${messageEsc}&rdquo;</p>` : ''}
               <p style="color:#5f6368;font-size:13px;margin-top:24px;">
                 ${isIn ? 'Time to plan the details!' : 'No worries - there\'s always next time.'}
               </p>
