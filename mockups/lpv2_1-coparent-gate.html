@@ -1,0 +1,1503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Spontany — Set your co-parent up first</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   RESET & BASE — matches lp1-match.html so the two LPs are visually comparable
+   ═══════════════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --navy: #0a0a0a;
+  --purple-bg: #141414;
+  --lime: #c4d630;
+  --lime-dark: #a3b325;
+  --lime-glow: rgba(196, 214, 48, 0.25);
+  --lime-dim: rgba(196, 214, 48, 0.08);
+  --purple: #a78bfa;
+  --purple-deep: #7c5cbf;
+  --purple-glow: rgba(167, 139, 250, 0.18);
+  --white: #ffffff;
+  --muted: rgba(255, 255, 255, 0.5);
+  --muted-light: rgba(255, 255, 255, 0.35);
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-hover: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.08);
+  --warn: #f5c451;
+  --good: #4ade80;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-pill: 999px;
+  --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --bounce: 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+html, body {
+  height: 100%;
+  background: var(--navy);
+  color: var(--white);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+
+#app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-width: 430px;
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+.screen {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 24px;
+  opacity: 0;
+  transform: translateX(60px);
+  pointer-events: none;
+  transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.screen::-webkit-scrollbar { display: none; }
+.screen.active { opacity: 1; transform: translateX(0); pointer-events: auto; }
+.screen.exit-left { opacity: 0; transform: translateX(-60px); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROGRESS BAR
+   ═══════════════════════════════════════════════════════════════════════════ */
+#progress {
+  position: absolute;
+  left: 0; right: 0;
+  height: 4px;
+  z-index: 100;
+  padding: 0 24px;
+  top: max(12px, env(safe-area-inset-top));
+}
+#progress-inner {
+  height: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+#progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--lime), var(--purple));
+  border-radius: 2px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BACK BUTTON
+   ═══════════════════════════════════════════════════════════════════════════ */
+.back-btn {
+  position: absolute;
+  top: 16px; left: 24px;
+  z-index: 50;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.back-btn:active { transform: scale(0.92); }
+.back-btn svg { width: 18px; height: 18px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TYPOGRAPHY
+   ═══════════════════════════════════════════════════════════════════════════ */
+.headline { font-size: 28px; font-weight: 800; line-height: 1.2; letter-spacing: -0.5px; }
+.subheadline { font-size: 16px; font-weight: 400; color: var(--muted); line-height: 1.5; margin-top: 12px; }
+.prompt { font-size: 22px; font-weight: 700; line-height: 1.3; letter-spacing: -0.3px; }
+.sub { font-size: 14px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+.microcopy { font-size: 13px; color: var(--muted-light); font-style: italic; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BUTTONS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 18px 32px;
+  background: var(--lime);
+  color: var(--navy);
+  font-size: 17px;
+  font-weight: 700;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: var(--bounce);
+  -webkit-tap-highlight-color: transparent;
+  position: relative;
+  overflow: hidden;
+  font-family: inherit;
+}
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 60%);
+  pointer-events: none;
+}
+.btn-primary:active { transform: scale(0.97); }
+.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+.btn-secondary {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 16px 24px;
+  background: var(--surface);
+  color: var(--white);
+  font-size: 15px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: var(--transition);
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
+}
+.btn-secondary:active { transform: scale(0.97); background: var(--surface-hover); }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 100%;
+  padding: 14px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  font-family: inherit;
+}
+.btn-ghost:active { color: var(--white); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   INPUTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.input-field {
+  width: 100%;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--white);
+  font-size: 18px;
+  font-weight: 500;
+  font-family: inherit;
+  outline: none;
+  transition: var(--transition);
+  -webkit-tap-highlight-color: transparent;
+}
+.input-field::placeholder { color: var(--muted-light); }
+.input-field:focus {
+  border-color: var(--lime);
+  box-shadow: 0 0 0 3px var(--lime-glow);
+}
+.input-row {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.input-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   RELATIONSHIP PILLS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.pill-row {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-top: 14px;
+}
+.relation-pill {
+  padding: 10px 18px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  transition: var(--bounce);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.relation-pill:active { transform: scale(0.93); }
+.relation-pill.selected {
+  background: rgba(196, 214, 48, 0.12);
+  border-color: var(--lime);
+  color: var(--lime);
+}
+
+/* Reach-method (whatsapp / sms / email) */
+.reach-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 8px;
+}
+.reach-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 14px 8px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--bounce);
+  -webkit-tap-highlight-color: transparent;
+}
+.reach-tile:active { transform: scale(0.95); }
+.reach-tile.selected {
+  background: rgba(196, 214, 48, 0.08);
+  border-color: var(--lime);
+}
+.reach-tile svg { width: 22px; height: 22px; color: var(--white); }
+.reach-tile.selected svg { color: var(--lime); }
+.reach-tile span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.reach-tile.selected span { color: var(--lime); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CUSTODY GRID
+   ═══════════════════════════════════════════════════════════════════════════ */
+.week-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lime);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  margin-bottom: 10px;
+  margin-top: 20px;
+}
+.week-label:first-of-type { margin-top: 0; }
+
+.day-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+.day-tile {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding-bottom: 9px; /* room for KIDS label when selected */
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  transition: var(--bounce);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  position: relative;
+}
+.day-tile .day-abbr {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  opacity: 0.7;
+  line-height: 1;
+}
+.day-tile .day-num {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  line-height: 1;
+}
+.day-tile:active { transform: scale(0.9); }
+.day-tile.kids {
+  background: rgba(124, 92, 191, 0.22);
+  border-color: var(--purple-deep);
+  color: var(--white);
+}
+.day-tile.kids .day-abbr { opacity: 0.85; }
+.day-tile.kids::after {
+  content: 'KIDS';
+  position: absolute;
+  bottom: 3px;
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: var(--purple);
+}
+.day-tile.today::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 5px var(--lime);
+}
+
+/* Legend */
+.legend {
+  display: flex; gap: 16px;
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.legend-dot.kids { background: rgba(124, 92, 191, 0.6); }
+.legend-dot.free { background: rgba(255, 255, 255, 0.15); border: 1.5px solid var(--border); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   INVITE PREVIEW CARD
+   ═══════════════════════════════════════════════════════════════════════════ */
+.invite-card {
+  background: linear-gradient(135deg, rgba(196, 214, 48, 0.06) 0%, rgba(167, 139, 250, 0.04) 100%);
+  border: 1px solid rgba(196, 214, 48, 0.2);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-top: 8px;
+}
+.invite-card-header {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 12px;
+}
+.invite-avatar {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--lime), var(--purple));
+  color: var(--navy);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.invite-card-meta { font-size: 13px; color: var(--muted); }
+.invite-card-meta strong { color: var(--white); font-weight: 600; }
+.invite-body {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.82);
+  white-space: pre-wrap;
+}
+.invite-body .link-row {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--lime);
+  font-family: 'SF Mono', Menlo, monospace;
+  word-break: break-all;
+}
+
+/* Tiny editable note */
+.invite-edit-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  background: none; border: none;
+  padding: 4px;
+  font-family: inherit;
+}
+.invite-edit-toggle:hover { color: var(--white); }
+.invite-edit-toggle svg { width: 14px; height: 14px; }
+
+textarea.invite-edit-area {
+  width: 100%;
+  margin-top: 10px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--white);
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+  outline: none;
+}
+textarea.invite-edit-area:focus {
+  border-color: var(--lime);
+  box-shadow: 0 0 0 3px var(--lime-glow);
+}
+
+/* Share button row */
+.share-row { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+.share-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%;
+  padding: 16px;
+  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: var(--bounce);
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.share-btn:active { transform: scale(0.97); }
+.share-btn svg { width: 20px; height: 20px; }
+.share-whatsapp { background: #25d366; color: #fff; }
+.share-sms { background: var(--surface); color: var(--white); border: 1px solid var(--border); }
+.share-email { background: var(--surface); color: var(--white); border: 1px solid var(--border); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAITING ROOM
+   ═══════════════════════════════════════════════════════════════════════════ */
+.waiting-hero {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  padding: 32px 0 20px;
+}
+.waiting-orb {
+  position: relative;
+  width: 120px; height: 120px;
+  margin-bottom: 24px;
+}
+.waiting-orb .pulse {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--lime-glow) 0%, transparent 70%);
+  animation: pulse-out 2.4s ease-out infinite;
+}
+.waiting-orb .pulse:nth-child(2) { animation-delay: 0.8s; }
+.waiting-orb .pulse:nth-child(3) { animation-delay: 1.6s; }
+.waiting-orb .core {
+  position: absolute; inset: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--lime), var(--purple));
+  display: flex; align-items: center; justify-content: center;
+  color: var(--navy);
+  font-size: 24px;
+  font-weight: 800;
+  box-shadow: 0 0 32px var(--lime-glow);
+}
+
+@keyframes pulse-out {
+  0% { transform: scale(0.6); opacity: 0.8; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+.status-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 24px;
+  padding: 14px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 8px var(--warn);
+  margin-right: 10px;
+  animation: blink 1.8s ease-in-out infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.status-label { font-size: 14px; font-weight: 600; }
+.status-time { font-size: 12px; color: var(--muted); }
+
+.timeline {
+  margin-top: 24px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.timeline h4 {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lime);
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  margin-bottom: 14px;
+}
+.timeline-step {
+  display: flex; gap: 14px;
+  padding: 10px 0;
+  position: relative;
+}
+.timeline-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 11px; top: 32px;
+  width: 2px; height: calc(100% - 18px);
+  background: var(--border);
+}
+.step-mark {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--navy);
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  z-index: 1;
+}
+.timeline-step.done .step-mark {
+  background: var(--lime);
+  border-color: var(--lime);
+  color: var(--navy);
+}
+.timeline-step.active .step-mark {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.step-text {
+  font-size: 14px;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.timeline-step.done .step-text,
+.timeline-step.active .step-text { color: var(--white); }
+.step-text small { display: block; color: var(--muted-light); font-size: 12px; margin-top: 2px; }
+
+/* Privacy reassurance card */
+.privacy-card {
+  margin-top: 18px;
+  padding: 14px 16px;
+  background: rgba(167, 139, 250, 0.06);
+  border: 1px solid rgba(167, 139, 250, 0.2);
+  border-radius: var(--radius);
+  display: flex; gap: 12px;
+}
+.privacy-card svg {
+  width: 18px; height: 18px;
+  color: var(--purple);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.privacy-card p {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  line-height: 1.5;
+}
+
+/* Demo-only controls */
+.demo-toolbar {
+  position: fixed;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  display: flex; gap: 8px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px dashed rgba(196, 214, 48, 0.3);
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.demo-btn {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.demo-btn.active, .demo-btn:active { color: var(--lime); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ACCEPTED CELEBRATION
+   ═══════════════════════════════════════════════════════════════════════════ */
+.celebrate {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+  padding: 0 8px;
+  position: relative;
+}
+.celebrate-glow {
+  position: absolute;
+  width: 320px; height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--lime-glow) 0%, transparent 60%);
+  top: 18%; left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  animation: pulse-celebrate 3s ease-in-out infinite;
+}
+@keyframes pulse-celebrate {
+  0%, 100% { transform: translateX(-50%) scale(1); opacity: 0.8; }
+  50% { transform: translateX(-50%) scale(1.1); opacity: 1; }
+}
+.celebrate-badge {
+  width: 96px; height: 96px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--lime), var(--purple));
+  display: flex; align-items: center; justify-content: center;
+  color: var(--navy);
+  margin-bottom: 28px;
+  box-shadow: 0 0 48px var(--lime-glow);
+  z-index: 2;
+}
+.celebrate-badge svg { width: 44px; height: 44px; stroke-width: 3; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HERO SPECIFIC
+   ═══════════════════════════════════════════════════════════════════════════ */
+.hero-glow {
+  position: absolute;
+  width: 260px; height: 260px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--lime-glow) 0%, transparent 70%);
+  top: 18%; left: 50%;
+  transform: translateX(-50%);
+  animation: glow-float 6s ease-in-out infinite;
+  pointer-events: none;
+}
+.hero-orb-purple {
+  position: absolute;
+  width: 140px; height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--purple-glow) 0%, transparent 70%);
+  bottom: 24%; right: -20px;
+  animation: glow-float 8s ease-in-out infinite reverse;
+  pointer-events: none;
+}
+@keyframes glow-float {
+  0%, 100% { transform: translateX(-50%) scale(1); opacity: 0.6; }
+  50% { transform: translateX(-50%) scale(1.15); opacity: 1; }
+}
+.hero-content {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center;
+  padding-bottom: 80px;
+}
+.hero-content .lock-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px;
+  margin-bottom: 18px;
+  border-radius: var(--radius-pill);
+  background: rgba(167, 139, 250, 0.1);
+  border: 1px solid rgba(167, 139, 250, 0.25);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--purple);
+  text-transform: uppercase;
+}
+.hero-content .lock-badge svg { width: 12px; height: 12px; }
+.logo-img { width: 56px; height: 56px; margin-bottom: 28px; border-radius: 14px; }
+
+/* The two-circles diagram (you ⊕ co-parent) */
+.duo-circles {
+  display: flex; justify-content: center; align-items: center;
+  margin: 24px 0 16px;
+  height: 100px;
+}
+.duo-circle {
+  width: 76px; height: 76px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1.5px solid var(--border);
+  color: var(--muted);
+  background: var(--surface);
+}
+.duo-circle.you {
+  border-color: var(--lime);
+  color: var(--lime);
+  background: var(--lime-dim);
+  z-index: 2;
+}
+.duo-circle.them {
+  margin-left: -22px;
+  border-color: var(--purple);
+  color: var(--purple);
+  background: rgba(167, 139, 250, 0.1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LAYOUT HELPERS
+   ═══════════════════════════════════════════════════════════════════════════ */
+.spacer { flex: 1; }
+.gap-8 { height: 8px; } .gap-12 { height: 12px; } .gap-16 { height: 16px; }
+.gap-20 { height: 20px; } .gap-24 { height: 24px; } .gap-32 { height: 32px; }
+.gap-40 { height: 40px; }
+.bottom-action { padding: 16px 0 max(24px, env(safe-area-inset-bottom)); margin-top: auto; }
+.content-area { padding-top: 68px; flex: 1; display: flex; flex-direction: column; }
+.watermark {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.15);
+  padding: 16px 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DESKTOP GUARD
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (min-width: 431px) {
+  body {
+    display: flex; align-items: center; justify-content: center;
+    background: #060609;
+  }
+  #app {
+    height: 100%;
+    max-height: 900px;
+    border-radius: 24px;
+    overflow: hidden;
+    box-shadow: 0 0 80px rgba(196, 214, 48, 0.06), 0 0 0 1px var(--border);
+    background: var(--navy);
+  }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- PROGRESS BAR -->
+  <div id="progress"><div id="progress-inner"><div id="progress-fill"></div></div></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 1: HERO — the gate is the value prop
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen active" id="screen-hero">
+    <div class="hero-glow"></div>
+    <div class="hero-orb-purple"></div>
+    <div class="hero-content">
+      <img src="/public/logo3.svg" alt="Spontany" class="logo-img" onerror="this.style.display='none'">
+      <div class="lock-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Made for two
+      </div>
+      <h1 class="headline" style="font-size: 32px; max-width: 320px;">This is where life gets a little easier.</h1>
+      <p class="subheadline" style="max-width: 320px;">Pick the person you're always trying to sync with &mdash; your partner, your co-parent, your closest friend. Bring them in, and the planning noise starts to quiet down.</p>
+
+      <div class="duo-circles">
+        <div class="duo-circle you">You</div>
+        <div class="duo-circle them">Them</div>
+      </div>
+
+      <div class="gap-24"></div>
+      <button class="btn-primary" style="max-width: 260px;" onclick="goTo('screen-you')">Pick your person &rarr;</button>
+      <p class="microcopy" style="margin-top: 16px; max-width: 280px;">About 90 seconds. They get one warm message from you &mdash; not a marketing blast from us.</p>
+    </div>
+    <div class="watermark">spontany</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 2: ABOUT YOU
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-you">
+    <div class="content-area">
+      <button class="back-btn" onclick="goTo('screen-hero')" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <p class="prompt">Two quick things about you.</p>
+      <p class="sub">So Spontany knows who you are — and where to ping you the second they say yes.</p>
+      <div class="gap-24"></div>
+
+      <div class="input-row">
+        <div>
+          <div class="input-label">Your first name</div>
+          <input class="input-field" id="your-name" type="text" placeholder="e.g. Sam" autocomplete="given-name" maxlength="20">
+        </div>
+        <div>
+          <div class="input-label">Your mobile</div>
+          <input class="input-field" id="your-phone" type="tel" placeholder="(555) 123-4567" autocomplete="tel" inputmode="tel" maxlength="20">
+          <p class="microcopy" style="margin-top: 8px;">One text when they accept. That's it — no daily nudges.</p>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="bottom-action">
+        <button class="btn-primary" id="btn-you-next" disabled onclick="goTo('screen-them')">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 3: ABOUT THEM
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-them">
+    <div class="content-area">
+      <button class="back-btn" onclick="goTo('screen-you')" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <p class="prompt" id="them-prompt">Who are you syncing with?</p>
+      <p class="sub">First name is enough for now. You can rename them in-app.</p>
+      <div class="gap-24"></div>
+
+      <div class="input-row">
+        <div>
+          <div class="input-label">Their first name</div>
+          <input class="input-field" id="their-name" type="text" placeholder="e.g. Alex" autocomplete="off" maxlength="20">
+        </div>
+        <div>
+          <div class="input-label">They're your&hellip;</div>
+          <div class="pill-row" id="relation-pills">
+            <div class="relation-pill" data-rel="partner" onclick="selectRel(this)">Partner</div>
+            <div class="relation-pill" data-rel="co-parent" onclick="selectRel(this)">Co-parent</div>
+            <div class="relation-pill" data-rel="parent friend" onclick="selectRel(this)">Parent friend</div>
+            <div class="relation-pill" data-rel="close friend" onclick="selectRel(this)">Close friend</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="spacer"></div>
+      <div class="bottom-action">
+        <button class="btn-primary" id="btn-them-next" disabled onclick="goTo('screen-custody')">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 4: CUSTODY PATTERN — quick sketch, they'll confirm later
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-custody">
+    <div class="content-area">
+      <button class="back-btn" onclick="goTo('screen-them')" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <p class="prompt" id="custody-prompt">Which days are kids with you?</p>
+      <p class="sub" id="custody-sub">Rough sketch. <span id="custody-them-name">Your co-parent</span> can correct it on their side &mdash; that's part of the point.</p>
+      <div class="gap-24"></div>
+
+      <div class="week-label" id="custody-weekA-label">Week A</div>
+      <div class="day-grid" id="custody-weekA"></div>
+      <div class="week-label" id="custody-weekB-label">Week B</div>
+      <div class="day-grid" id="custody-weekB"></div>
+
+      <div class="legend">
+        <span><span class="legend-dot kids" id="legend-busy-dot"></span><span id="legend-busy-label">Kids with you</span></span>
+        <span><span class="legend-dot free"></span>Free</span>
+      </div>
+
+      <div class="bottom-action">
+        <button class="btn-primary" id="btn-custody-next" onclick="goTo('screen-reach')">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 5: HOW TO REACH THEM
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-reach">
+    <div class="content-area">
+      <button class="back-btn" onclick="goTo('screen-custody')" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <p class="prompt" id="reach-prompt">How do you usually reach them?</p>
+      <p class="sub">Pick whatever's easiest. We don't message them — you do, from your phone.</p>
+      <div class="gap-24"></div>
+
+      <div class="reach-row" id="reach-row">
+        <div class="reach-tile" data-reach="whatsapp" onclick="selectReach(this)">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zM12 0C5.373 0 0 5.373 0 12c0 2.125.553 4.12 1.522 5.857L.055 23.456l5.725-1.502A11.938 11.938 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.82c-1.964 0-3.832-.53-5.45-1.498l-.39-.232-3.397.891.907-3.313-.255-.404A9.786 9.786 0 012.18 12c0-5.422 4.398-9.82 9.82-9.82 5.422 0 9.82 4.398 9.82 9.82 0 5.422-4.398 9.82-9.82 9.82z"/></svg>
+          <span>WhatsApp</span>
+        </div>
+        <div class="reach-tile" data-reach="sms" onclick="selectReach(this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          <span>SMS</span>
+        </div>
+        <div class="reach-tile" data-reach="email" onclick="selectReach(this)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+          <span>Email</span>
+        </div>
+      </div>
+
+      <div class="gap-12"></div>
+      <p class="microcopy">Whichever they actually check.</p>
+
+      <div class="bottom-action">
+        <button class="btn-primary" id="btn-reach-next" disabled onclick="goTo('screen-invite')">Preview the invite</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 6: INVITE PREVIEW + SEND
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-invite">
+    <div class="content-area">
+      <button class="back-btn" onclick="goTo('screen-reach')" aria-label="Back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <p class="prompt">Here's what they'll get.</p>
+      <p class="sub">From your number, in your voice. We send nothing on your behalf.</p>
+      <div class="gap-20"></div>
+
+      <div class="invite-card">
+        <div class="invite-card-header">
+          <div class="invite-avatar" id="invite-avatar">A</div>
+          <div class="invite-card-meta">
+            To <strong id="invite-to-name">Alex</strong> &middot; via <strong id="invite-channel">WhatsApp</strong>
+          </div>
+        </div>
+        <div class="invite-body" id="invite-body">Hey Alex — I started using Spontany to keep our custody schedule in one place so we stop double-booking. It needs both of us to work. Tap this and confirm I got the kid days right: spontany.io/c/9k4-mx</div>
+      </div>
+
+      <button class="invite-edit-toggle" onclick="toggleInviteEdit()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <span id="invite-edit-label">Tweak the message</span>
+      </button>
+      <textarea class="invite-edit-area" id="invite-edit-area" style="display:none;" oninput="updateInviteBody()"></textarea>
+
+      <div class="share-row">
+        <button class="share-btn share-whatsapp" id="share-primary" onclick="sendAndWait()">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zM12 0C5.373 0 0 5.373 0 12c0 2.125.553 4.12 1.522 5.857L.055 23.456l5.725-1.502A11.938 11.938 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0z"/></svg>
+          <span id="share-primary-label">Send via WhatsApp</span>
+        </button>
+        <button class="btn-ghost" onclick="copyInviteLink()" id="copy-link-btn">or copy the link</button>
+      </div>
+
+      <p class="microcopy" style="text-align:center; margin-top: 8px;">
+        Spontany unlocks for you the moment they tap accept.
+      </p>
+      <div class="gap-24"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 7: WAITING ROOM — the real reveal of the gate
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-waiting">
+    <div class="content-area" style="padding-top: 48px;">
+      <div class="waiting-hero">
+        <div class="waiting-orb">
+          <div class="pulse"></div>
+          <div class="pulse"></div>
+          <div class="pulse"></div>
+          <div class="core" id="waiting-initial">A</div>
+        </div>
+        <h2 class="headline" style="font-size: 24px;" id="waiting-headline">Waiting for Alex.</h2>
+        <p class="subheadline" style="max-width: 300px;" id="waiting-sub">We'll text the moment they tap accept. They'll see one polite nudge tomorrow if they ghost — no spam either way.</p>
+      </div>
+
+      <div class="status-row">
+        <span><span class="status-dot"></span><span class="status-label">Invite sent</span></span>
+        <span class="status-time" id="status-time">just now</span>
+      </div>
+
+      <div class="timeline">
+        <h4>What happens next</h4>
+        <div class="timeline-step done">
+          <div class="step-mark">&#10003;</div>
+          <div class="step-text">You sent the invite
+            <small>From your phone, your number.</small>
+          </div>
+        </div>
+        <div class="timeline-step active">
+          <div class="step-mark">2</div>
+          <div class="step-text"><span id="tl-them">Alex</span> reviews the calendar
+            <small>They can correct your custody sketch before accepting.</small>
+          </div>
+        </div>
+        <div class="timeline-step">
+          <div class="step-mark">3</div>
+          <div class="step-text">Spontany unlocks for both of you
+            <small>You'll get a push the moment it does.</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="privacy-card">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <p><strong style="color:#fff">They only see what they need to.</strong> Custody days. Kid first names (optional). Nothing about who you date, who you hang with, or anything else in your Spontany.</p>
+      </div>
+
+      <div class="bottom-action">
+        <button class="btn-secondary" onclick="goTo('screen-invite')">Re-send or change channel</button>
+        <div class="gap-12"></div>
+        <button class="btn-ghost" onclick="goTo('screen-hero')">Start over</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 8: ACCEPTED — celebration & app entry
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-accepted">
+    <div class="celebrate-glow"></div>
+    <div class="celebrate">
+      <div class="celebrate-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </div>
+      <h2 class="headline" style="font-size: 28px; max-width: 320px;" id="accepted-headline">Alex just accepted.</h2>
+      <p class="subheadline" style="max-width: 300px;">The calendar's confirmed. Spontany is unlocked for both of you.</p>
+      <div class="gap-40"></div>
+      <button class="btn-primary" style="max-width: 280px;" onclick="alert('This would open the Spontany app.')">Open Spontany &rarr;</button>
+      <div class="gap-16"></div>
+      <p class="microcopy" id="accepted-tweak">They tweaked 2 of your custody days, btw — tap in to see what changed.</p>
+    </div>
+    <div class="watermark">spontany</div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       SCREEN 9 (Person B's view): Just accepted — tell sender on WhatsApp
+       Uses the same wa.me deep-link pattern as the rest of Spontany.
+       Person B's own WhatsApp sends the message — no backend, no Twilio.
+       ═══════════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="screen-invitee-accepted">
+    <div class="celebrate-glow"></div>
+    <div class="content-area" style="padding-top: 56px; position: relative; z-index: 2;">
+      <div style="display:flex; flex-direction:column; align-items:center; text-align:center;">
+        <div class="celebrate-badge" style="margin-bottom: 20px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h2 class="headline" style="font-size: 26px;">You're in.</h2>
+        <p class="subheadline" style="max-width: 320px;">Now let <span id="invitee-tell-name">Sam</span> know — a word from you lands different than a system text.</p>
+      </div>
+
+      <div class="gap-24"></div>
+      <div class="share-row">
+        <button class="share-btn share-whatsapp" onclick="openInviteeWA()">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zM12 0C5.373 0 0 5.373 0 12c0 2.125.553 4.12 1.522 5.857L.055 23.456l5.725-1.502A11.938 11.938 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0z"/></svg>
+          <span>Tell <span id="invitee-wa-name">Sam</span> on WhatsApp</span>
+        </button>
+        <button class="share-btn share-sms" onclick="openInviteeSMS()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+          <span>Or just text them</span>
+        </button>
+      </div>
+
+      <div class="invite-card" style="margin-top: 18px; background: var(--surface); border-color: var(--border);">
+        <div class="invite-card-meta" style="margin-bottom: 8px;">Preview &mdash; what they'll see:</div>
+        <div class="invite-body" id="invitee-reply-preview" style="font-size: 14px;">Hey Sam &mdash; done. Just accepted your Spontany invite, schedule looks right on my end.</div>
+      </div>
+
+      <div class="privacy-card" style="margin-top: 18px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        <p>Sent from your number, in your voice &mdash; not from Spontany. Same way they invited you.</p>
+      </div>
+
+      <div class="bottom-action">
+        <button class="btn-ghost" onclick="alert('In production this would close & open the user\'s Spontany.')">Skip &mdash; Spontany will text them</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Demo-only flow controls -->
+<div class="demo-toolbar" id="demo-toolbar">
+  <button class="demo-btn" onclick="simulateAccept()">Sender side</button>
+  <button class="demo-btn" onclick="goTo('screen-invitee-accepted')">Invitee side</button>
+  <button class="demo-btn" onclick="goTo('screen-hero')">Reset</button>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════════════════════ */
+const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+const state = {
+  yourName: '',
+  yourPhone: '',
+  theirName: '',
+  relation: 'co-parent',
+  reach: '',
+  custodyA: new Set([0,1,5,6]),  // pre-filled with a plausible week
+  custodyB: new Set([2,3]),
+  inviteEdited: false,
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NAVIGATION
+   ═══════════════════════════════════════════════════════════════════════════ */
+const progressMap = {
+  'screen-hero': 0,
+  'screen-you': 12,
+  'screen-them': 25,
+  'screen-custody': 45,
+  'screen-reach': 60,
+  'screen-invite': 78,
+  'screen-waiting': 92,
+  'screen-accepted': 100,
+  // Invitee perspective sits outside the sender's progress flow; keep at 100 visually.
+  'screen-invitee-accepted': 100,
+};
+
+let currentScreen = 'screen-hero';
+function goTo(id) {
+  if (id === currentScreen) return;
+  const prev = document.getElementById(currentScreen);
+  const next = document.getElementById(id);
+  const screens = Object.keys(progressMap);
+  const goingForward = screens.indexOf(id) > screens.indexOf(currentScreen);
+
+  prev.classList.remove('active');
+  prev.classList.add('exit-left');
+
+  next.style.transform = goingForward ? 'translateX(60px)' : 'translateX(-60px)';
+  next.style.opacity = '0';
+  next.offsetHeight; // reflow
+  next.classList.remove('exit-left');
+  next.classList.add('active');
+  next.style.transform = '';
+  next.style.opacity = '';
+
+  setTimeout(() => prev.classList.remove('exit-left'), 500);
+  currentScreen = id;
+  document.getElementById('progress-fill').style.width = (progressMap[id] || 0) + '%';
+
+  // Side-effects per screen
+  if (id === 'screen-waiting') startWaitingClock();
+  if (id === 'screen-invite') refreshInvitePreview();
+  if (id === 'screen-invitee-accepted') refreshInviteeReplyView();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCREEN 2 — YOUR NAME
+   ═══════════════════════════════════════════════════════════════════════════ */
+const yourNameInput = document.getElementById('your-name');
+const yourPhoneInput = document.getElementById('your-phone');
+
+function validateYouScreen() {
+  const nameOk = state.yourName.length >= 1;
+  // Loose phone check — at least 7 digits, mockup doesn't need real validation
+  const phoneDigits = state.yourPhone.replace(/\D/g, '');
+  const phoneOk = phoneDigits.length >= 7;
+  document.getElementById('btn-you-next').disabled = !(nameOk && phoneOk);
+}
+
+yourNameInput.addEventListener('input', e => {
+  state.yourName = e.target.value.trim();
+  validateYouScreen();
+});
+
+yourPhoneInput.addEventListener('input', e => {
+  state.yourPhone = e.target.value.trim();
+  validateYouScreen();
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCREEN 3 — THEIR NAME + RELATION
+   ═══════════════════════════════════════════════════════════════════════════ */
+const theirNameInput = document.getElementById('their-name');
+theirNameInput.addEventListener('input', e => {
+  state.theirName = e.target.value.trim();
+  refreshNamesEverywhere();
+  validateThemScreen();
+});
+
+function selectRel(el) {
+  document.querySelectorAll('.relation-pill').forEach(p => p.classList.remove('selected'));
+  el.classList.add('selected');
+  state.relation = el.dataset.rel;
+  refreshNamesEverywhere();
+  refreshCustodyFraming();
+  validateThemScreen();
+}
+
+function validateThemScreen() {
+  const ok = state.theirName.length >= 1 && state.relation;
+  document.getElementById('btn-them-next').disabled = !ok;
+}
+
+function refreshNamesEverywhere() {
+  const fallback = ({
+    'partner': 'your partner',
+    'co-parent': 'your co-parent',
+    'parent friend': 'your parent friend',
+    'close friend': 'your friend',
+  })[state.relation] || 'your person';
+  const them = state.theirName || fallback;
+  document.getElementById('custody-them-name').textContent = them;
+  document.getElementById('tl-them').textContent = them;
+}
+
+/* Custody screen rephrases per relationship.
+   co-parent → same kids, they correct your sketch.
+   parent friend → different kids, but the kid-days question still applies to you.
+   partner / close friend → no kid assumption; just busy nights. */
+function refreshCustodyFraming() {
+  const them = state.theirName || 'they';
+  if (state.relation === 'co-parent') {
+    document.getElementById('custody-prompt').textContent = 'Which days are kids with you?';
+    document.getElementById('custody-sub').innerHTML =
+      `Rough sketch. <span id="custody-them-name">${them}</span> can correct it on their side &mdash; that's part of the point.`;
+    document.getElementById('legend-busy-label').textContent = 'Kids with you';
+  } else if (state.relation === 'parent friend') {
+    document.getElementById('custody-prompt').textContent = 'Which days are kids with you?';
+    document.getElementById('custody-sub').innerHTML =
+      `<span id="custody-them-name">${them}</span> will mark their own kid days too &mdash; that's how we find a window that actually works for both of you.`;
+    document.getElementById('legend-busy-label').textContent = 'Kids with you';
+  } else {
+    document.getElementById('custody-prompt').textContent = 'Which nights are usually a no?';
+    document.getElementById('custody-sub').innerHTML =
+      `Rough sketch &mdash; kid duty, work nights, whatever locks you up. <span id="custody-them-name">${them}</span> can mark theirs once they're in.`;
+    document.getElementById('legend-busy-label').textContent = 'Usually busy';
+  }
+}
+
+/* Default — "Partner" pre-selected, since this LP is now broader than co-parent */
+document.querySelector('.relation-pill[data-rel="partner"]').classList.add('selected');
+state.relation = 'partner';
+refreshCustodyFraming();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCREEN 4 — CUSTODY GRID with real dates from this Monday
+   "Closest Monday, even if you're past it" = start of the current ISO week.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const TODAY = (() => { const d = new Date(); d.setHours(0,0,0,0); return d; })();
+const REFERENCE_MONDAY = (() => {
+  const d = new Date(TODAY);
+  // getDay(): 0=Sun, 1=Mon, ..., 6=Sat. (getDay()+6)%7 = days since Monday.
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d;
+})();
+
+function dateForCell(weekOffset, dayIndex) {
+  const d = new Date(REFERENCE_MONDAY);
+  d.setDate(d.getDate() + (weekOffset * 7) + dayIndex);
+  return d;
+}
+
+function fmtRange(start, end) {
+  const monStart = start.toLocaleString('en-US', { month: 'short' });
+  const monEnd   = end.toLocaleString('en-US', { month: 'short' });
+  if (start.getMonth() === end.getMonth()) {
+    return `${monStart} ${start.getDate()}–${end.getDate()}`;
+  }
+  return `${monStart} ${start.getDate()} – ${monEnd} ${end.getDate()}`;
+}
+
+function renderCustodyGrid(containerId, selectionSet, weekOffset) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  DAYS.forEach((day, i) => {
+    const date = dateForCell(weekOffset, i);
+    const isToday = date.getTime() === TODAY.getTime();
+    const tile = document.createElement('div');
+    tile.className = 'day-tile'
+      + (selectionSet.has(i) ? ' kids' : '')
+      + (isToday ? ' today' : '');
+    tile.innerHTML = `<span class="day-abbr">${day}</span><span class="day-num">${date.getDate()}</span>`;
+    tile.onclick = () => {
+      if (selectionSet.has(i)) selectionSet.delete(i);
+      else selectionSet.add(i);
+      tile.classList.toggle('kids');
+    };
+    c.appendChild(tile);
+  });
+}
+
+renderCustodyGrid('custody-weekA', state.custodyA, 0);
+renderCustodyGrid('custody-weekB', state.custodyB, 1);
+
+document.getElementById('custody-weekA-label').textContent =
+  `Week A · ${fmtRange(dateForCell(0, 0), dateForCell(0, 6))}`;
+document.getElementById('custody-weekB-label').textContent =
+  `Week B · ${fmtRange(dateForCell(1, 0), dateForCell(1, 6))}`;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCREEN 5 — REACH METHOD
+   ═══════════════════════════════════════════════════════════════════════════ */
+function selectReach(el) {
+  document.querySelectorAll('.reach-tile').forEach(t => t.classList.remove('selected'));
+  el.classList.add('selected');
+  state.reach = el.dataset.reach;
+  document.getElementById('btn-reach-next').disabled = false;
+
+  // Recolor the primary CTA on the invite preview screen
+  const primary = document.getElementById('share-primary');
+  const label = document.getElementById('share-primary-label');
+  if (state.reach === 'sms') {
+    primary.className = 'share-btn share-sms';
+    label.textContent = 'Open Messages';
+  } else if (state.reach === 'email') {
+    primary.className = 'share-btn share-email';
+    label.textContent = 'Open Mail';
+  } else {
+    primary.className = 'share-btn share-whatsapp';
+    label.textContent = 'Send via WhatsApp';
+  }
+  document.getElementById('invite-channel').textContent =
+    state.reach === 'sms' ? 'SMS' : state.reach === 'email' ? 'Email' : 'WhatsApp';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCREEN 6 — INVITE PREVIEW
+   ═══════════════════════════════════════════════════════════════════════════ */
+function buildInviteText() {
+  const them = state.theirName || 'Alex';
+  if (state.relation === 'partner') {
+    return `Hey ${them} — I'm setting us up on Spontany so we can see when our schedules actually match. It needs both of us to work. Tap this to finish the setup:\nspontany.io/c/9k4-mx`;
+  }
+  if (state.relation === 'co-parent') {
+    return `Hey ${them} — I started using Spontany to keep our custody schedule in one place to make it easy to manage. It needs both of us to work. Tap this and confirm I got the kid days right:\nspontany.io/c/9k4-mx`;
+  }
+  if (state.relation === 'close friend') {
+    return `Hey ${them} — trying something called Spontany that makes it super easy to know when we are both free next. It's better with you in it. Tap this and drop in your usual busy nights:\nspontany.io/c/9k4-mx`;
+  }
+  // parent friend
+  return `Hey ${them} — trying this thing called Spontany. It actually knows when we both have the kids vs. when we don't, so we can stop the "maybe next month" loop. Tap this and pop in your custody days:\nspontany.io/c/9k4-mx`;
+}
+
+function refreshInvitePreview() {
+  const them = state.theirName || 'Alex';
+  document.getElementById('invite-to-name').textContent = them;
+  document.getElementById('invite-avatar').textContent = them.charAt(0).toUpperCase();
+  if (!state.inviteEdited) {
+    document.getElementById('invite-body').textContent = buildInviteText();
+    document.getElementById('invite-edit-area').value = buildInviteText();
+  }
+  // Waiting room name + initial
+  document.getElementById('waiting-initial').textContent = them.charAt(0).toUpperCase();
+  document.getElementById('waiting-headline').textContent = `Waiting for ${them}.`;
+  document.getElementById('accepted-headline').textContent = `${them} just accepted.`;
+}
+
+function toggleInviteEdit() {
+  const area = document.getElementById('invite-edit-area');
+  const label = document.getElementById('invite-edit-label');
+  if (area.style.display === 'none') {
+    area.style.display = 'block';
+    label.textContent = 'Done editing';
+    if (!state.inviteEdited) area.value = buildInviteText();
+    area.focus();
+  } else {
+    area.style.display = 'none';
+    label.textContent = 'Tweak the message';
+  }
+}
+
+function updateInviteBody() {
+  const v = document.getElementById('invite-edit-area').value;
+  state.inviteEdited = true;
+  document.getElementById('invite-body').textContent = v;
+}
+
+function copyInviteLink() {
+  const link = 'spontany.io/c/9k4-mx';
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(link).then(() => {
+      const btn = document.getElementById('copy-link-btn');
+      const orig = btn.textContent;
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => btn.textContent = orig, 1400);
+    });
+  }
+}
+
+function sendAndWait() {
+  // In production this would open WhatsApp/SMS/Mail with prefilled text.
+  // For the mockup, just transition to waiting.
+  goTo('screen-waiting');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SCREEN 7 — WAITING CLOCK
+   ═══════════════════════════════════════════════════════════════════════════ */
+let waitingStart = null;
+function startWaitingClock() {
+  waitingStart = Date.now();
+  updateStatusTime();
+}
+function updateStatusTime() {
+  if (!waitingStart || currentScreen !== 'screen-waiting') return;
+  const secs = Math.floor((Date.now() - waitingStart) / 1000);
+  const el = document.getElementById('status-time');
+  if (secs < 5) el.textContent = 'just now';
+  else if (secs < 60) el.textContent = `${secs}s ago`;
+  else if (secs < 3600) el.textContent = `${Math.floor(secs/60)}m ago`;
+  else el.textContent = `${Math.floor(secs/3600)}h ago`;
+  setTimeout(updateStatusTime, 1000);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   INVITEE-SIDE REPLY (Person B → Person A via WhatsApp/SMS)
+   Uses the same wa.me deep-link pattern as the rest of Spontany — the message
+   sends from Person B's own phone, no Twilio cost or backend round-trip.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function buildInviteeReplyText() {
+  const sender = state.yourName || 'Sam';
+  if (state.relation === 'co-parent') {
+    return `Hey ${sender} — done. Just accepted your Spontany invite, schedule looks right on my end.`;
+  }
+  if (state.relation === 'partner') {
+    return `Hey ${sender} — just accepted on Spontany. We're synced.`;
+  }
+  if (state.relation === 'parent friend') {
+    return `Hey ${sender} — accepted on Spontany! Now let's actually find a week.`;
+  }
+  // close friend
+  return `Hey ${sender} — done, accepted your Spontany invite. Let's plan something.`;
+}
+
+function refreshInviteeReplyView() {
+  const sender = state.yourName || 'Sam';
+  document.getElementById('invitee-tell-name').textContent = sender;
+  document.getElementById('invitee-wa-name').textContent = sender;
+  document.getElementById('invitee-reply-preview').textContent = buildInviteeReplyText();
+}
+
+function openInviteeWA() {
+  const phoneDigits = (state.yourPhone || '').replace(/\D/g, '');
+  const msg = encodeURIComponent(buildInviteeReplyText());
+  // If no phone in state (demo path), wa.me with no number opens contact picker
+  const url = phoneDigits ? `https://wa.me/${phoneDigits}?text=${msg}` : `https://wa.me/?text=${msg}`;
+  window.open(url, '_blank');
+}
+
+function openInviteeSMS() {
+  const phoneDigits = (state.yourPhone || '').replace(/\D/g, '');
+  const msg = encodeURIComponent(buildInviteeReplyText());
+  window.location.href = phoneDigits ? `sms:${phoneDigits}?body=${msg}` : `sms:?body=${msg}`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DEMO TOOLBAR
+   ═══════════════════════════════════════════════════════════════════════════ */
+function simulateAccept() {
+  // Only meaningful from the waiting screen, but allow it from anywhere
+  goTo('screen-accepted');
+}
+</script>
+
+</body>
+</html>

@@ -694,27 +694,49 @@ router.post('/suggestions', (req, res) => {
   // Send to the other party
   const toUserId = conn.requester_id === me.id ? conn.target_id : conn.requester_id;
 
-  const id = uuidv4();
-  q.createSuggestion.run(id, me.id, toUserId, JSON.stringify(changes), note || null);
-  console.log(`[suggestions] created ${id} from=${me.id} to=${toUserId} conn=${conn.id} type=${conn.relationship_type} count=${changes.length}`);
-
-  // Push notification fires automatically — it goes via WebPush to whatever
-  // device the co-parent has installed the PWA on, no phone-number guesswork.
-  // SMS is intentionally NOT auto-sent here: the sender uses the share modal
-  // to pick the right number and trigger the SMS via their native app.
-  const count = changes.length;
-  const dayWord = count === 1 ? 'day' : 'days';
+  // Each proposed day becomes its own independent suggestion row so either
+  // party can act on a single day without touching the rest. We keep the
+  // per-row `changes` shape as a one-element JSON array so the existing
+  // approve/reject/cancel endpoints and loaders need no changes.
   const trimmedNote = note ? String(note).trim().slice(0, 80) : '';
+  const created = [];
+  db.exec('BEGIN');
+  try {
+    for (const c of changes) {
+      if (!c || !c.date) continue;
+      const id = uuidv4();
+      q.createSuggestion.run(id, me.id, toUserId, JSON.stringify([c]), note || null);
+      created.push({ id, date: c.date });
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  if (created.length === 0) {
+    return res.status(400).json({ error: 'changes must contain at least one dated entry' });
+  }
+
+  console.log(`[suggestions] created ${created.length} row(s) from=${me.id} to=${toUserId} conn=${conn.id} type=${conn.relationship_type}`);
+
+  // One push per day — each is an independent item the co-parent reviews
+  // separately. WebPush goes to whatever device has the PWA installed; SMS
+  // is intentionally NOT auto-sent (sender uses the share modal for that).
   const notePushSuffix = trimmedNote ? ` — "${trimmedNote}"` : '';
+  for (const { id, date } of created) {
+    const d = new Date(date + 'T12:00:00');
+    const dateLabel = isNaN(d) ? date
+      : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    sendPush(toUserId, {
+      title: `${me.name} proposed a schedule change`,
+      body:  `${dateLabel} — tap to review${notePushSuffix}`,
+      tag:   `suggestion-${id}`,
+      url:   '/calendar.html',
+    });
+  }
 
-  sendPush(toUserId, {
-    title: `${me.name} proposed a schedule change`,
-    body:  `${count} ${dayWord} — tap to review${notePushSuffix}`,
-    tag:   `suggestion-${id}`,
-    url:   '/calendar.html',
-  });
-
-  res.json({ id, status: 'pending' });
+  res.json({ suggestions: created, count: created.length, status: 'pending' });
 });
 
 // GET /api/suggestions/pending - any authenticated user sees suggestions sent to them
@@ -765,10 +787,26 @@ router.post('/suggestions/:id/approve', (req, res) => {
 
   const changes = JSON.parse(s.changes);
 
+  // Optional partial-approve: client sends approve_dates with the subset of
+  // dates the recipient toggled "approved" in the panel. Missing → apply all
+  // (backward compat). Empty array → caller should have hit /reject instead;
+  // we 400 rather than silently mark the suggestion approved-with-zero.
+  let toApply = changes;
+  if (Array.isArray(req.body?.approve_dates)) {
+    const allow = new Set(req.body.approve_dates);
+    if (allow.size === 0) {
+      return res.status(400).json({ error: 'approve_dates is empty — use /reject to decline' });
+    }
+    toApply = changes.filter(c => allow.has(c.date));
+    if (toApply.length === 0) {
+      return res.status(400).json({ error: 'approve_dates contains no valid dates from this suggestion' });
+    }
+  }
+
   // Apply each change - proposed_owner is always from the sender's (from_user_id) perspective
   db.exec('BEGIN');
   try {
-    for (const c of changes) {
+    for (const c of toApply) {
       const existingFrom = q.getDay.get(s.from_user_id, c.date);
       const existingTo   = q.getDay.get(me.id, c.date);
       // Sender's calendar: apply proposed_owner as-is
@@ -784,7 +822,7 @@ router.post('/suggestions/:id/approve', (req, res) => {
   }
 
   q.updateSuggestionStatus.run('approved', s.id);
-  res.json({ status: 'approved', applied: changes.length });
+  res.json({ status: 'approved', applied: toApply.length, total: changes.length });
 });
 
 // POST /api/suggestions/:id/cancel - sender withdraws their own pending suggestion.

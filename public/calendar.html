@@ -641,7 +641,34 @@ td.partner-free::before { background: var(--accent) !important; opacity: 0.6 !im
       border-top:1px solid var(--border); flex-shrink:0;
     }
     .sugg-panel-footer .btn { flex:1; }
+    .sugg-panel-footer .btn:disabled { opacity:0.4; cursor:not-allowed; filter:none; }
     .sugg-highlight { border-left:3px solid var(--blue); background:#f0f4ff; border-radius:0 6px 6px 0; padding:2px 0; }
+
+    /* Per-day approve/decline rows inside the suggestion panel. Tap a row to
+       flip between approved (lime ✓) and declined (muted ✕) — Apply button
+       only acts on the still-approved subset. */
+    .sugg-row {
+      display:flex; align-items:center; gap:8px;
+      padding:9px 8px; border-bottom:1px solid var(--border);
+      border-radius:6px; cursor:pointer; transition:background .12s, opacity .12s;
+      user-select:none;
+    }
+    .sugg-row:hover { background:rgba(255,255,255,0.03); }
+    .sugg-row:last-child { border-bottom:none; }
+    .sugg-row-toggle {
+      width:24px; height:24px; flex-shrink:0;
+      border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
+      font-size:12px; font-weight:800;
+      background:rgba(230,249,82,0.20); color:#e6f952;
+      border:1.5px solid rgba(230,249,82,0.45);
+    }
+    .sugg-row.declined { opacity:0.55; }
+    .sugg-row.declined .sugg-row-date,
+    .sugg-row.declined .sugg-row-arrow { text-decoration:line-through; }
+    .sugg-row.declined .sugg-row-toggle {
+      background:rgba(255,255,255,0.04); color:var(--muted);
+      border-color:var(--border);
+    }
 
     /* ── Activity modal ──────────────────────────────────────────────────── */
     #activity-modal {
@@ -4334,8 +4361,6 @@ function renderDaySheetBody(dateStr, isFree, alsoFree, dayPlans = [], dayIdeas =
         <div class="dpc-meta">Tap to review and approve or decline${moreNote}</div>
       </div>`;
   } else if (outgoingSugg) {
-    const dayCount = (outgoingSugg.changes || []).length;
-    const moreNote = dayCount > 1 ? ` (cancels the whole ${dayCount}-day proposal)` : '';
     html += `<div class="dss-heading">Pending change</div>
       <div class="day-plan-card" style="opacity:0.9;">
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;">
@@ -4343,7 +4368,7 @@ function renderDaySheetBody(dateStr, isFree, alsoFree, dayPlans = [], dayIdeas =
         </div>
         <div class="dpc-meta">You proposed a change on this day. Waiting for them to approve.</div>
         <div style="margin-top:10px;display:flex;justify-content:flex-end;">
-          <button class="btn btn-outline btn-sm" onclick="cancelMySuggestion('${outgoingSugg.id}', ${dayCount})">Cancel suggestion${moreNote}</button>
+          <button class="btn btn-outline btn-sm" onclick="cancelMySuggestion('${outgoingSugg.id}')">Cancel this day</button>
         </div>
       </div>`;
   }
@@ -4440,6 +4465,9 @@ function renderDaySheetBody(dateStr, isFree, alsoFree, dayPlans = [], dayIdeas =
           <span class="dpc-status planning">Saved</span>
         </div>
         ${metaParts.length ? `<div class="dpc-meta">${metaParts.join(' · ')}</div>` : ''}
+        <div class="dpc-actions">
+          <button class="dpc-btn dpc-btn-cancel" onclick="removeSavedOuting('${o.id}','${dateStr}',event)">Remove</button>
+        </div>
       </div>`;
     }
     for (const p of dayPlans) {
@@ -4776,6 +4804,32 @@ async function cancelOuting(outingId, dateStr) {
   showToast('Plan cancelled');
 
   // Fire DELETE - no await/re-sync so nothing can race and restore the item
+  fetch(`/api/outings/${outingId}?token=${MY_TOKEN}`, { method: 'DELETE' });
+}
+
+// Remove a saved/solo outing straight from the day sheet. Saved outings
+// (status='saved', often no invitees) only open the editor on tap, so
+// without this there's no way to delete one. Optimistic local removal +
+// fire-and-forget DELETE, mirroring the planned-event cancel path.
+async function removeSavedOuting(outingId, dateStr, ev) {
+  if (ev) ev.stopPropagation();
+  if (!confirm('Remove this saved plan? This can\'t be undone.')) return;
+
+  myOutings = myOutings.filter(o => o.id !== outingId);
+  if (dateStr && outingsByDate[dateStr]) {
+    outingsByDate[dateStr] = outingsByDate[dateStr].filter(o => o.id !== outingId);
+  }
+
+  const sheet = document.getElementById('day-sheet');
+  if (sheet?.classList.contains('open') && dateStr) {
+    const isFree   = calendarDays[dateStr]?.owner !== 'self' && !isWorkDay(new Date(dateStr + 'T12:00:00'));
+    const alsoFree = socialConnections.filter(sc => sc.days[dateStr]?.owner !== 'self');
+    renderDaySheetBody(dateStr, isFree, alsoFree);
+  }
+  renderCalendar();
+  updateBnBadges();
+  showToast('Saved plan removed');
+
   fetch(`/api/outings/${outingId}?token=${MY_TOKEN}`, { method: 'DELETE' });
 }
 
@@ -6144,16 +6198,18 @@ async function submitSuggestion() {
 
   if (res.ok) {
     // Capture before cancelSuggest() clears suggestedChanges + re-renders.
-    // Build a client-side suggestion entry so the outgoing card can show
-    // day count and the Cancel button has a real id to act on.
+    // Each day is now its own independent suggestion row, so map every date
+    // to its own id — the Cancel button on a day acts on that day alone.
     const resData = await res.json().catch(() => ({}));
-    const newSugg = {
-      id:         resData.id,
-      changes:    changes,
-      created_at: new Date().toISOString()
-    };
+    const createdAt = new Date().toISOString();
+    const byDate = new Map((resData.suggestions || []).map(s => [s.date, s.id]));
     for (const c of changes) {
-      if (c.date) proposedPendingByDate.set(c.date, newSugg);
+      if (!c.date) continue;
+      proposedPendingByDate.set(c.date, {
+        id:         byDate.get(c.date),
+        changes:    [c],
+        created_at: createdAt
+      });
     }
     const finalNote = document.getElementById('suggest-note')?.value.trim() || suggestReason;
     cancelSuggest();
@@ -6597,11 +6653,8 @@ function reviewSuggestionFromDaySheet(suggId) {
   openSuggestionModal(suggId);
 }
 
-async function cancelMySuggestion(suggId, dayCount) {
-  const prompt = dayCount > 1
-    ? `Cancel this suggestion? All ${dayCount} proposed days will be withdrawn.`
-    : 'Cancel this suggestion?';
-  if (!confirm(prompt)) return;
+async function cancelMySuggestion(suggId) {
+  if (!confirm('Withdraw this proposed day? Other days you proposed are unaffected.')) return;
 
   const res = await fetch(`/api/suggestions/${suggId}/cancel?token=${MY_TOKEN}`, {
     method:  'POST',
@@ -6647,13 +6700,15 @@ function openSuggestionModal(suggId) {
     const dateStr = d.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
     const currentOwnerView  = c.current_owner  === 'self' ? 'coparent' : 'self';
     const proposedOwnerView = c.proposed_owner === 'self' ? 'coparent' : 'self';
-    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #f3f4f6;">
-      <span style="min-width:90px;font-weight:600;font-size:12px;">${dateStr}</span>
-      ${ownerLabel(currentOwnerView)}<span style="color:var(--muted);font-size:11px;">→</span>${ownerLabel(proposedOwnerView)}
+    return `<div class="sugg-row" data-date="${c.date}" onclick="toggleSuggestionRow(this)">
+      <span class="sugg-row-toggle">✓</span>
+      <span class="sugg-row-date" style="min-width:90px;font-weight:600;font-size:12px;">${dateStr}</span>
+      ${ownerLabel(currentOwnerView)}<span class="sugg-row-arrow" style="color:var(--muted);font-size:11px;">→</span>${ownerLabel(proposedOwnerView)}
     </div>`;
   }).join('');
 
   document.getElementById('suggestion-changes-list').innerHTML = rows;
+  _refreshSuggestionPanelButtons();
 
   // Navigate calendar to the month of the first suggested day
   if (s.changes.length > 0) {
@@ -6672,15 +6727,54 @@ function closeSuggestionPanel() {
   activeSuggestionId = null;
 }
 
+function toggleSuggestionRow(row) {
+  row.classList.toggle('declined');
+  const icon = row.querySelector('.sugg-row-toggle');
+  if (icon) icon.textContent = row.classList.contains('declined') ? '✕' : '✓';
+  _refreshSuggestionPanelButtons();
+}
+
+function _refreshSuggestionPanelButtons() {
+  const rows = document.querySelectorAll('#suggestion-changes-list .sugg-row');
+  const total    = rows.length;
+  const approved = Array.from(rows).filter(r => !r.classList.contains('declined')).length;
+  const applyBtn = document.querySelector('#suggestion-panel .sugg-panel-footer .btn-primary');
+  if (!applyBtn || !total) return;
+  if (approved === 0) {
+    applyBtn.textContent = 'Apply';
+    applyBtn.disabled = true;
+  } else if (approved === total) {
+    applyBtn.textContent = total === 1 ? 'Apply change' : 'Apply all changes';
+    applyBtn.disabled = false;
+  } else {
+    applyBtn.textContent = `Apply ${approved} of ${total}`;
+    applyBtn.disabled = false;
+  }
+}
+
 async function approveSuggestion() {
   if (!activeSuggestionId) return;
+  // Collect dates the user kept toggled "approved" — declined rows are
+  // omitted, so the backend leaves those calendar days unchanged.
+  const approveDates = Array.from(
+    document.querySelectorAll('#suggestion-changes-list .sugg-row:not(.declined)')
+  ).map(r => r.dataset.date).filter(Boolean);
+  if (approveDates.length === 0) return;
+
   const res = await fetch(`/api/suggestions/${activeSuggestionId}/approve?token=${MY_TOKEN}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' }
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ approve_dates: approveDates })
   });
   if (res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const total = (data && typeof data.total === 'number') ? data.total : approveDates.length;
     closeSuggestionPanel();
-    showToast('✓ Changes applied');
+    showToast(
+      approveDates.length === total
+        ? '✓ Changes applied'
+        : `✓ Applied ${approveDates.length} of ${total}`
+    );
     await loadMyCalendar();
     await loadConnections();
   } else {

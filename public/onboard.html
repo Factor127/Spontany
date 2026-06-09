@@ -671,7 +671,7 @@ select { background:#1a1a1a !important; color:var(--text) !important; border-col
       <div id="done-connected-box" style="display:none;background:rgba(230,249,82,0.08);border:1.5px solid rgba(230,249,82,0.25);border-radius:10px;padding:14px 16px;margin:0 0 16px;font-size:13px;line-height:1.6;color:var(--lime);"></div>
 
       <!-- Free days strip (both modes) -->
-      <div style="margin-bottom:20px;">
+      <div id="done-free-strip-wrap" style="margin-bottom:20px;">
         <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:8px;">Your upcoming free days</div>
         <div id="done-free-strip"></div>
       </div>
@@ -1387,8 +1387,21 @@ const PERSONA_DONE_COPY = {
 async function renderDoneScreen() {
   if (MODE === 'invite') {
     document.getElementById('done-title').textContent = "You're in! 🎉";
-    document.getElementById('done-sub').textContent   = `Finding days you and ${ownerName} are both free…`;
     document.getElementById('done-footnote').textContent = 'Your schedule is private - only people you approve can see it.';
+
+    if (inviteRelType === 'coparent') {
+      // Co-parents share custody time by design — there are no "both free"
+      // overlaps to find, so skip the overlap fetch (which would just error
+      // out) and the empty "upcoming free days" strip. Confirm the link and
+      // point them at the shared custody calendar instead.
+      document.getElementById('done-sub').textContent = `You and ${ownerName} are now connected — your custody calendars will sync automatically.`;
+      document.getElementById('done-free-strip-wrap').style.display = 'none';
+      const openBtn = document.getElementById('done-open-calendar-btn');
+      if (openBtn) openBtn.textContent = 'Open shared calendar →';
+      return;
+    }
+
+    document.getElementById('done-sub').textContent   = `Finding days you and ${ownerName} are both free…`;
     await renderOverlapSection();
   } else {
     // Direct-mode (LP signup) climax: lead with the "first invite" CTA matching
