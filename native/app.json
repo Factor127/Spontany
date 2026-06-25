@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Spontany",
+    "slug": "spontany-native",
+    "scheme": "spontany",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": false },
+    "android": { "edgeToEdgeEnabled": true },
+    "plugins": [
+      "expo-router",
+      ["expo-contacts", { "contactsPermission": "Spontany uses your contacts to make it easy to invite your partner and find your co-parent." }]
+    ],
+    "experiments": { "typedRoutes": true }
+  }
+}
