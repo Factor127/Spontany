@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
-const { db, q, generateDaysFromPattern, checkAndRenewConnection, upsertManyDays, toDateStr, normalizePhone } = require('../db');
+const { db, q, generateDaysFromPattern, checkAndRenewConnection, upsertManyDays, toDateStr, normalizePhone, rebuildDaysFromVersions, complementPattern } = require('../db');
 const { assertPublicHttpUrl, safeFetch } = require('../utils/ssrf');
 const { escHtml } = require('../utils/html');
 
@@ -115,6 +115,8 @@ router.post('/users/setup', (req, res) => {
   if (pattern_type && pattern_type !== 'none') {
     const normData = normalizePatternData(pattern_type, pattern_data);
     q.upsertPattern.run(id, pattern_type, JSON.stringify(normData || {}), anchor_date || null);
+    // Seed the effective-dated history so future changes can layer on top of it.
+    q.upsertPatternVersion.run(id, '1970-01-01', pattern_type, JSON.stringify(normData || {}), anchor_date || null);
 
     // For structured patterns, generate 12 months of days as a baseline
     if (pattern_type !== 'custom') {
@@ -127,7 +129,7 @@ router.post('/users/setup', (req, res) => {
 
   // Save reviewed/edited days from the wizard (overrides generated days for the covered period)
   if (days && Array.isArray(days) && days.length > 0) {
-    upsertManyDays(id, days);
+    upsertManyDays(id, days, 'manual');
   }
 
   res.json({ token, message: 'Owner created. Save your personal URL.' });
@@ -196,6 +198,8 @@ router.post('/users/register', (req, res) => {
   if (pattern_type && pattern_type !== 'custom') {
     const normData = normalizePatternData(pattern_type, pattern_data);
     q.upsertPattern.run(userId, pattern_type, JSON.stringify(normData || {}), anchor_date || null);
+    // Seed the effective-dated history so future changes can layer on top of it.
+    q.upsertPatternVersion.run(userId, '1970-01-01', pattern_type, JSON.stringify(normData || {}), anchor_date || null);
 
     // Auto-generate days for the next 12 months
     const start = toDateStr(new Date());
@@ -206,7 +210,7 @@ router.post('/users/register', (req, res) => {
 
   // Save manual days if provided (custom mode)
   if (days && Array.isArray(days) && days.length > 0) {
-    upsertManyDays(userId, days);
+    upsertManyDays(userId, days, 'manual');
   }
 
   // Mirror mode: generate partner days as inverse of owner's calendar
@@ -320,7 +324,7 @@ router.post('/calendar/save', (req, res) => {
   const { days } = req.body;
   if (!Array.isArray(days)) return res.status(400).json({ error: 'days must be an array' });
 
-  upsertManyDays(user.id, days);
+  upsertManyDays(user.id, days, 'manual');
   res.json({ saved: days.length });
 });
 
@@ -809,11 +813,12 @@ router.post('/suggestions/:id/approve', (req, res) => {
     for (const c of toApply) {
       const existingFrom = q.getDay.get(s.from_user_id, c.date);
       const existingTo   = q.getDay.get(me.id, c.date);
-      // Sender's calendar: apply proposed_owner as-is
-      q.upsertDay.run(s.from_user_id, c.date, c.proposed_owner, existingFrom?.tags || '[]');
+      // Sender's calendar: apply proposed_owner as-is. These are agreed overrides,
+      // so mark them 'manual' — a later pattern change won't overwrite them.
+      q.upsertManualDay.run(s.from_user_id, c.date, c.proposed_owner, existingFrom?.tags || '[]');
       // Recipient's calendar: flip perspective
       const toOwner = c.proposed_owner === 'self' ? 'coparent' : 'self';
-      q.upsertDay.run(me.id, c.date, toOwner, existingTo?.tags || '[]');
+      q.upsertManualDay.run(me.id, c.date, toOwner, existingTo?.tags || '[]');
     }
     db.exec('COMMIT');
   } catch (e) {
@@ -870,7 +875,7 @@ router.post('/import/html', upload.single('file'), (req, res) => {
 
   if (days.length === 0) return res.status(400).json({ error: 'No calendar data found in file' });
 
-  upsertManyDays(owner.id, days);
+  upsertManyDays(owner.id, days, 'manual');
   res.json({ imported: days.length });
 });
 
@@ -1190,19 +1195,58 @@ router.put('/pattern', (req, res) => {
     return res.status(400).json({ error: 'Invalid pattern_type' });
   }
 
-  const normData = normalizePatternData(pattern_type, pattern_data);
-  const dataStr = JSON.stringify(normData || {});
-  q.upsertPattern.run(user.id, pattern_type, dataStr, anchor_date || null);
-
-  // Regenerate calendar days only for auto-generate types
-  if (pattern_type !== 'custom') {
-    const start = new Date(); start.setFullYear(start.getFullYear() - 1); // 1 year back
-    const end   = new Date(); end.setFullYear(end.getFullYear() + 2);     // 2 years ahead
-    const pattern = { pattern_type, pattern_data: dataStr, anchor_date: anchor_date || null };
-    upsertManyDays(user.id, generateDaysFromPattern(pattern, toDateStr(start), toDateStr(end)));
+  // The change applies from this day forward; everything before it stays frozen.
+  // Defaults to today when the client doesn't send one (preserves "apply now").
+  const effective_from = (req.body.effective_from || '').trim() || toDateStr(new Date());
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effective_from)) {
+    return res.status(400).json({ error: 'effective_from must be YYYY-MM-DD' });
   }
 
-  res.json({ ok: true });
+  const normData = normalizePatternData(pattern_type, pattern_data);
+  const dataStr = JSON.stringify(normData || {});
+
+  // Current-pattern pointer (editor default + legacy reads) tracks the newest save;
+  // the version row is the source of truth for regeneration.
+  q.upsertPattern.run(user.id, pattern_type, dataStr, anchor_date || null);
+  q.upsertPatternVersion.run(user.id, effective_from, pattern_type, dataStr, anchor_date || null);
+
+  // Regenerate my calendar from the cutover forward only. 'custom' has no rule to
+  // generate, but the version row still records the boundary.
+  if (pattern_type !== 'custom') {
+    rebuildDaysFromVersions(user.id, effective_from);
+  }
+
+  // Auto-mirror to the co-parent (their custody is the complement of mine) and
+  // notify them. One-sided by design: no approval needed, but the shared calendar
+  // stays consistent. Their past and manually-agreed days are untouched (the mirror
+  // only writes pattern days from the cutover forward).
+  let mirrored = false;
+  const conn = db.prepare(
+    `SELECT * FROM connections
+     WHERE (requester_id = ? OR target_id = ?)
+       AND status = 'approved' AND relationship_type = 'coparent'
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(user.id, user.id);
+
+  if (conn) {
+    const coparentId = conn.requester_id === user.id ? conn.target_id : conn.requester_id;
+    if (pattern_type !== 'custom') {
+      const complementData = complementPattern(pattern_type, dataStr);
+      q.upsertPatternVersion.run(coparentId, effective_from, pattern_type, complementData, anchor_date || null);
+      rebuildDaysFromVersions(coparentId, effective_from);
+      mirrored = true;
+    }
+    try {
+      sendPush(coparentId, {
+        title: 'Custody schedule updated',
+        body: `Your co-parent set a new schedule starting ${effective_from}.`,
+        tag: `pattern-change-${effective_from}`,
+        url: '/calendar.html'
+      });
+    } catch (e) { console.error('[pattern] co-parent push failed:', e.message); }
+  }
+
+  res.json({ ok: true, effective_from, mirrored });
 });
 
 // ── Activities ────────────────────────────────────────────────────────────

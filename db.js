@@ -125,6 +125,12 @@ try {
 } catch(e) { /* ignore if column not ready */ }
 try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)'); } catch(e) { /* table may not exist yet on first run */ }
 
+// ── Custody effective-dating ─────────────────────────────────────────────────
+// Distinguish pattern-generated days from days a human deliberately set (manual
+// edits, accepted suggestions, imported history). Pattern regeneration must never
+// clobber a 'manual' day. Existing rows are all pattern output → default 'pattern'.
+try { db.exec("ALTER TABLE calendar_days ADD COLUMN source TEXT NOT NULL DEFAULT 'pattern'"); } catch(e) { /* already exists */ }
+
 // ── Migrate pattern_data key names from onboarding legacy format ──────────────
 // Onboarding used week1_self_days/week2_self_days; canonical is week_a_days/week_b_days
 try {
@@ -161,6 +167,7 @@ db.exec(`
     date TEXT NOT NULL,
     owner TEXT NOT NULL CHECK(owner IN ('self','coparent')),
     tags TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT 'pattern',
     UNIQUE(user_id, date),
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
@@ -195,6 +202,24 @@ db.exec(`
       CHECK(pattern_type IN ('alternating_weeks','specific_days','custom')),
     pattern_data TEXT NOT NULL DEFAULT '{}',
     anchor_date TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+
+  -- Effective-dated custody patterns. The pattern in force on any date is the
+  -- version with the greatest effective_from <= that date. custody_pattern above
+  -- stays as the "current/newest" pointer (editor default + legacy reads); this
+  -- table is the source of truth for regeneration and is what lets a change apply
+  -- only from an agreed date forward without rewriting the past.
+  CREATE TABLE IF NOT EXISTS custody_pattern_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    effective_from TEXT NOT NULL,
+    pattern_type TEXT NOT NULL
+      CHECK(pattern_type IN ('alternating_weeks','specific_days','custom')),
+    pattern_data TEXT NOT NULL DEFAULT '{}',
+    anchor_date TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, effective_from),
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
 
@@ -234,6 +259,22 @@ db.exec(`
     FOREIGN KEY (to_user_id) REFERENCES users(id)
   );
 `);
+
+// ── Backfill custody_pattern_versions from the single-pattern table ───────────
+// Seed every existing user's current pattern as "version 0" effective from the
+// beginning of time, so the whole existing timeline resolves to today's pattern
+// until a dated change is scheduled. Idempotent: only seeds users with no version
+// rows yet, so it's a no-op on every boot after the first.
+try {
+  db.exec(`
+    INSERT INTO custody_pattern_versions (user_id, effective_from, pattern_type, pattern_data, anchor_date)
+    SELECT user_id, '1970-01-01', pattern_type, pattern_data, anchor_date
+    FROM custody_pattern cp
+    WHERE NOT EXISTS (
+      SELECT 1 FROM custody_pattern_versions v WHERE v.user_id = cp.user_id
+    )
+  `);
+} catch(e) { /* tables not ready on first boot; nothing to backfill anyway */ }
 
 db.exec(`CREATE TABLE IF NOT EXISTS outings (
   id TEXT PRIMARY KEY,
@@ -666,6 +707,23 @@ const q = {
     VALUES (?, ?, ?, ?)
     ON CONFLICT(user_id, date) DO UPDATE SET owner = excluded.owner, tags = excluded.tags
   `),
+  // Pattern-generated day. On conflict it only overwrites a row that is itself
+  // pattern-generated — a 'manual' day (agreed change, edit, import) is left alone.
+  upsertPatternDay: db.prepare(`
+    INSERT INTO calendar_days (user_id, date, owner, tags, source)
+    VALUES (?, ?, ?, ?, 'pattern')
+    ON CONFLICT(user_id, date) DO UPDATE SET
+      owner = excluded.owner, tags = excluded.tags
+    WHERE calendar_days.source = 'pattern'
+  `),
+  // Human-set day. Always wins and stamps the row 'manual' so later pattern
+  // regeneration won't touch it.
+  upsertManualDay: db.prepare(`
+    INSERT INTO calendar_days (user_id, date, owner, tags, source)
+    VALUES (?, ?, ?, ?, 'manual')
+    ON CONFLICT(user_id, date) DO UPDATE SET
+      owner = excluded.owner, tags = excluded.tags, source = 'manual'
+  `),
   deleteDay: db.prepare('DELETE FROM calendar_days WHERE user_id = ? AND date = ?'),
 
   getPattern:    db.prepare('SELECT * FROM custody_pattern WHERE user_id = ?'),
@@ -673,6 +731,18 @@ const q = {
     INSERT INTO custody_pattern (user_id, pattern_type, pattern_data, anchor_date)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
+      pattern_type = excluded.pattern_type,
+      pattern_data = excluded.pattern_data,
+      anchor_date  = excluded.anchor_date
+  `),
+
+  getPatternVersions: db.prepare(
+    'SELECT user_id, effective_from, pattern_type, pattern_data, anchor_date FROM custody_pattern_versions WHERE user_id = ? ORDER BY effective_from ASC'
+  ),
+  upsertPatternVersion: db.prepare(`
+    INSERT INTO custody_pattern_versions (user_id, effective_from, pattern_type, pattern_data, anchor_date)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, effective_from) DO UPDATE SET
       pattern_type = excluded.pattern_type,
       pattern_data = excluded.pattern_data,
       anchor_date  = excluded.anchor_date
@@ -1221,17 +1291,79 @@ function checkAndRenewConnection(conn) {
 
 // ── Bulk upsert with manual transaction ───────────────────────────────────────
 
-function upsertManyDays(userId, days) {
+function upsertManyDays(userId, days, source = 'pattern') {
+  const stmt = source === 'manual' ? q.upsertManualDay : q.upsertPatternDay;
   db.exec('BEGIN');
   try {
     for (const day of days) {
-      q.upsertDay.run(userId, day.date, day.owner, JSON.stringify(day.tags || []));
+      stmt.run(userId, day.date, day.owner, JSON.stringify(day.tags || []));
     }
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
   }
+}
+
+// ── Effective-dated regeneration ──────────────────────────────────────────────
+
+const ALL_DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+// Given one co-parent's pattern, produce the other's: the complement, since on
+// any given day exactly one parent has the kids. Day lists are stored as names.
+// 'custom' has no rule to invert, so it's returned unchanged (caller skips mirror).
+function complementPattern(pattern_type, patternDataStr) {
+  let d;
+  try { d = JSON.parse(patternDataStr || '{}'); } catch (e) { d = {}; }
+  const invert = (arr) => ALL_DAY_NAMES.filter(name => !(arr || []).includes(name));
+  if (pattern_type === 'alternating_weeks') {
+    return JSON.stringify({ week_a_days: invert(d.week_a_days), week_b_days: invert(d.week_b_days) });
+  }
+  if (pattern_type === 'specific_days') {
+    return JSON.stringify({ self_days: invert(d.self_days) });
+  }
+  return patternDataStr;
+}
+
+// Rematerialize calendar_days from the user's effective-dated pattern versions,
+// but ONLY for dates >= fromDate. Days before fromDate are never written, which
+// is what keeps a change from rewriting the past. Manual/agreed days (any date)
+// survive via upsertPatternDay's source guard. Returns the number of pattern rows
+// generated (before the manual-skip filter). Horizon: fromDate .. +2 years.
+function rebuildDaysFromVersions(userId, fromDate) {
+  const versions = q.getPatternVersions.all(userId);
+  if (!versions.length) return 0;
+
+  const end = new Date(); end.setFullYear(end.getFullYear() + 2);
+  const endStr = toDateStr(end);
+
+  const days = [];
+  for (let i = 0; i < versions.length; i++) {
+    const v = versions[i];
+    if (v.pattern_type === 'custom') continue; // custom = manual days only
+
+    // This version governs [effective_from, nextVersion.effective_from). Clip to
+    // [fromDate, endStr] so we never write before the cutover or past the horizon.
+    // Date strings are YYYY-MM-DD, so lexicographic compare == chronological.
+    let sliceStart = v.effective_from > fromDate ? v.effective_from : fromDate;
+    let sliceEnd = endStr;
+    const next = versions[i + 1];
+    if (next) {
+      const dayBefore = new Date(next.effective_from);
+      dayBefore.setDate(dayBefore.getDate() - 1);
+      const nb = toDateStr(dayBefore);
+      if (nb < sliceEnd) sliceEnd = nb;
+    }
+    if (sliceStart > sliceEnd) continue; // version entirely before the cutover
+
+    days.push(...generateDaysFromPattern(
+      { pattern_type: v.pattern_type, pattern_data: v.pattern_data, anchor_date: v.anchor_date },
+      sliceStart, sliceEnd
+    ));
+  }
+
+  upsertManyDays(userId, days, 'pattern');
+  return days.length;
 }
 
 // ── Opportunity convenience wrappers (used by services/) ─────────────────────
@@ -1354,6 +1486,7 @@ module.exports = {
   db, q,
   normalizePhone,
   generateDaysFromPattern, checkAndRenewConnection, upsertManyDays, toDateStr,
+  rebuildDaysFromVersions, complementPattern,
   // Opportunity helpers
   createOpportunity, updateOpportunity, getOpportunityById, shareOpportunity, unshareOpportunity,
   searchOpportunities, textSearchOpportunities, getOpportunitiesForMatching,

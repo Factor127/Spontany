@@ -261,8 +261,15 @@ select { background:#1a1a1a !important; color:var(--text) !important; border-col
       </div>
     </div>
 
+    <div style="margin-top:16px;">
+      <label class="field-label" style="font-size:12px;">
+        Applies from — the new schedule starts on this day. Days before it stay exactly as they are:
+      </label>
+      <input id="effective-from" type="date" class="field-input" style="max-width:200px;">
+    </div>
+
     <div style="display:flex;justify-content:flex-end;margin-top:16px;" id="schedule-save-row">
-      <button class="btn btn-primary" onclick="saveSchedule()">Apply &amp; regenerate calendar</button>
+      <button class="btn btn-primary" onclick="saveSchedule()">Apply from selected date</button>
     </div>
   </div>
 
@@ -378,6 +385,9 @@ else if (MY_TOKEN && !params.has('token')) {
 let currentPatternType = 'specific_days';
 
 async function loadSchedule() {
+  const efEl = document.getElementById('effective-from');
+  if (efEl && !efEl.value) efEl.value = new Date().toISOString().slice(0, 10);
+
   const res = await fetch(`/api/pattern?token=${MY_TOKEN}`);
   if (!res.ok) return;
   const { pattern } = await res.json();
@@ -447,6 +457,9 @@ async function saveSchedule() {
     pattern_data = { week_a_days: weekADays, week_b_days: weekBDays };
   }
 
+  const effective_from = document.getElementById('effective-from').value
+    || new Date().toISOString().slice(0, 10);
+
   const btn = event.target;
   btn.textContent = 'Saving…';
   btn.disabled = true;
@@ -454,14 +467,14 @@ async function saveSchedule() {
   const res = await fetch(`/api/pattern?token=${MY_TOKEN}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pattern_type: currentPatternType, pattern_data, anchor_date })
+    body: JSON.stringify({ pattern_type: currentPatternType, pattern_data, anchor_date, effective_from })
   });
 
-  btn.textContent = 'Apply & regenerate calendar';
+  btn.textContent = 'Apply from selected date';
   btn.disabled = false;
 
   if (res.ok) {
-    showToast('✓ Schedule saved - calendar updated');
+    showToast(`✓ New schedule saved, starting ${effective_from}`);
   } else {
     const err = await res.json().catch(() => ({}));
     showToast(err.error || 'Save failed - please try again');
