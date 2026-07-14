@@ -1212,9 +1212,11 @@ router.put('/pattern', (req, res) => {
 
   // Regenerate my calendar from the cutover forward only. 'custom' has no rule to
   // generate, but the version row still records the boundary.
+  let regenCount = 0;
   if (pattern_type !== 'custom') {
-    rebuildDaysFromVersions(user.id, effective_from);
+    regenCount = rebuildDaysFromVersions(user.id, effective_from);
   }
+  console.log(`[pattern] user=${user.id.slice(0, 8)} type=${pattern_type} from=${effective_from} regen=${regenCount}`);
 
   // Auto-mirror to the co-parent (their custody is the complement of mine) and
   // notify them. One-sided by design: no approval needed, but the shared calendar

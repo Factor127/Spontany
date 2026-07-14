@@ -725,6 +725,14 @@ const q = {
       owner = excluded.owner, tags = excluded.tags, source = 'manual'
   `),
   deleteDay: db.prepare('DELETE FROM calendar_days WHERE user_id = ? AND date = ?'),
+  // Effective-dated regen primitives: clear pattern-generated days from a cutover
+  // forward (manual/agreed days survive), then re-insert without ever overwriting a
+  // manual row. Portable across SQLite builds — no reliance on DO UPDATE..WHERE.
+  deletePatternDaysFrom: db.prepare("DELETE FROM calendar_days WHERE user_id = ? AND date >= ? AND source = 'pattern'"),
+  insertPatternDayKeepManual: db.prepare(`
+    INSERT OR IGNORE INTO calendar_days (user_id, date, owner, tags, source)
+    VALUES (?, ?, ?, ?, 'pattern')
+  `),
 
   getPattern:    db.prepare('SELECT * FROM custody_pattern WHERE user_id = ?'),
   upsertPattern: db.prepare(`
@@ -1362,7 +1370,21 @@ function rebuildDaysFromVersions(userId, fromDate) {
     ));
   }
 
-  upsertManyDays(userId, days, 'pattern');
+  // Delete-then-insert rather than an ON CONFLICT..WHERE upsert: clears old pattern
+  // rows from the cutover forward and reinserts, skipping any date that now holds a
+  // manual/agreed row (INSERT OR IGNORE preserves it). This can't silently no-op an
+  // update the way DO UPDATE..WHERE can on some SQLite builds.
+  db.exec('BEGIN');
+  try {
+    q.deletePatternDaysFrom.run(userId, fromDate);
+    for (const d of days) {
+      q.insertPatternDayKeepManual.run(userId, d.date, d.owner, JSON.stringify(d.tags || []));
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
   return days.length;
 }
 
